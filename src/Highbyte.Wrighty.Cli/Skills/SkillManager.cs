@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Workers;
 using YamlDotNet.Serialization;
 
 namespace Highbyte.Wrighty.Cli.Skills;
@@ -58,9 +59,20 @@ public interface ISkillManager
         string? projectDirectory,
         bool force,
         CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<SkillOperationResult>> UninstallAsync(
+        string agent,
+        SkillScope scope,
+        string workingDirectory,
+        string? projectDirectory,
+        bool force,
+        CancellationToken cancellationToken);
 }
 
-public sealed class SkillManager(string assetRoot, string userHome) : ISkillManager
+public sealed class SkillManager(
+    string assetRoot,
+    string userHome,
+    IReadOnlyList<AgentDescriptor>? agentDescriptors = null) : ISkillManager
 {
     public const string SkillName = "wrighty";
     private const string ManifestName = ".wrighty-skill.json";
@@ -75,10 +87,14 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         WriteIndented = true,
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
+    private readonly IReadOnlyList<AgentDescriptor> agents =
+        agentDescriptors ?? BuiltInAgentRegistry.Descriptors;
 
-    public static SkillManager CreateDefault() => new(
+    public static SkillManager CreateDefault(
+        IReadOnlyList<AgentDescriptor>? agentDescriptors = null) => new(
         Path.Combine(AppContext.BaseDirectory, "skills", SkillName),
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        agentDescriptors);
 
     public async Task<IReadOnlyList<SkillOperationResult>> InstallAsync(
         string agent,
@@ -89,12 +105,22 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         CancellationToken cancellationToken)
     {
         var skillVersion = BundledSkillVersion();
+        var destinations = Destinations(agent, scope, workingDirectory, projectDirectory);
+        await RejectDuplicateInstallationsAsync(
+            agent,
+            scope,
+            workingDirectory,
+            projectDirectory,
+            force,
+            skillVersion,
+            cancellationToken);
         var results = new List<SkillOperationResult>();
-        foreach (var destination in Destinations(agent, scope, workingDirectory, projectDirectory))
+        foreach (var destination in destinations)
         {
             var inspection = await InspectAsync(
                 destination.Path,
                 destination.Target,
+                destination.RequiresInvocationPolicy,
                 skillVersion,
                 cancellationToken);
             if (inspection.State == SkillInstallationState.Current)
@@ -134,6 +160,134 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         return results;
     }
 
+    public async Task<IReadOnlyList<SkillOperationResult>> UninstallAsync(
+        string agent,
+        SkillScope scope,
+        string workingDirectory,
+        string? projectDirectory,
+        bool force,
+        CancellationToken cancellationToken)
+    {
+        var skillVersion = BundledSkillVersion();
+        var inspected = new List<(SkillDestination Destination, SkillInspection Inspection)>();
+        foreach (var destination in Destinations(agent, scope, workingDirectory, projectDirectory))
+        {
+            var inspection = await InspectAsync(
+                destination.Path,
+                destination.Target,
+                destination.RequiresInvocationPolicy,
+                skillVersion,
+                cancellationToken);
+            if (inspection.State != SkillInstallationState.Missing &&
+                (inspection.Manifest is null || inspection.Description is null))
+            {
+                throw new TrackerException(
+                    "SKILL_INVALID",
+                    $"The skill at '{destination.Path}' is not a recognized Wrighty installation and was not removed.",
+                    9,
+                    new Dictionary<string, object?> { ["path"] = destination.Path });
+            }
+            if (inspection.State == SkillInstallationState.Modified && !force)
+            {
+                throw new TrackerException(
+                    "SKILL_MODIFIED",
+                    $"Tool-owned files at '{destination.Path}' were modified. " +
+                    "Review them, then use --force to remove this recognized installation.",
+                    9,
+                    new Dictionary<string, object?> { ["path"] = destination.Path });
+            }
+            inspected.Add((destination, inspection));
+        }
+
+        var results = new List<SkillOperationResult>();
+        foreach (var (destination, inspection) in inspected)
+        {
+            var changed = inspection.State != SkillInstallationState.Missing;
+            if (changed)
+                DeleteInstallation(destination.Path);
+            results.Add(Result(
+                destination,
+                inspection,
+                SkillInstallationState.Missing,
+                changed,
+                false,
+                skillVersion));
+        }
+        return results;
+    }
+
+    private async Task RejectDuplicateInstallationsAsync(
+        string agent,
+        SkillScope scope,
+        string workingDirectory,
+        string? projectDirectory,
+        bool force,
+        string skillVersion,
+        CancellationToken cancellationToken)
+    {
+        if (force)
+            return;
+        var destinations = Destinations(agent, scope, workingDirectory, projectDirectory);
+        var otherScope = scope == SkillScope.Project ? SkillScope.User : SkillScope.Project;
+        var others = Destinations(agent, otherScope, workingDirectory, projectDirectory)
+            .ToDictionary(destination => destination.Target, StringComparer.OrdinalIgnoreCase);
+        foreach (var destination in destinations)
+        {
+            var requested = await InspectAsync(
+                destination.Path,
+                destination.Target,
+                destination.RequiresInvocationPolicy,
+                skillVersion,
+                cancellationToken);
+            if (requested.State != SkillInstallationState.Missing ||
+                !others.TryGetValue(destination.Target, out var other))
+                continue;
+            var existing = await InspectAsync(
+                other.Path,
+                other.Target,
+                other.RequiresInvocationPolicy,
+                skillVersion,
+                cancellationToken);
+            if (existing.State == SkillInstallationState.Missing)
+                continue;
+            throw new TrackerException(
+                "SKILL_DUPLICATE",
+                $"A {otherScope.ToString().ToLowerInvariant()} Wrighty skill already exists at " +
+                $"'{other.Path}'. Agent hosts resolve duplicate skill names differently. " +
+                $"Remove that copy first, or pass --force to install the additional {scope.ToString().ToLowerInvariant()} copy.",
+                9,
+                new Dictionary<string, object?>
+                {
+                    ["existingPath"] = other.Path,
+                    ["requestedPath"] = destination.Path
+                });
+        }
+    }
+
+    private static void DeleteInstallation(string path)
+    {
+        try
+        {
+            Directory.Delete(path, recursive: true);
+            DeleteEmptyParent(Path.GetDirectoryName(path));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            throw new TrackerException(
+                "SKILL_DELETE_FAILED",
+                $"Could not remove the skill at '{path}': {exception.Message}",
+                9,
+                new Dictionary<string, object?> { ["path"] = path },
+                exception);
+        }
+    }
+
+    private static void DeleteEmptyParent(string? path)
+    {
+        if (path is not null && Directory.Exists(path) && !Directory.EnumerateFileSystemEntries(path).Any())
+            Directory.Delete(path);
+    }
+
     public async Task<IReadOnlyList<SkillOperationResult>> CheckAsync(
         string agent,
         SkillScope scope,
@@ -148,6 +302,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
             var inspection = await InspectAsync(
                 destination.Path,
                 destination.Target,
+                destination.RequiresInvocationPolicy,
                 skillVersion,
                 cancellationToken);
             results.Add(Result(
@@ -177,6 +332,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
             var inspection = await InspectAsync(
                 destination.Path,
                 destination.Target,
+                destination.RequiresInvocationPolicy,
                 skillVersion,
                 cancellationToken);
             if (inspection.State == SkillInstallationState.Missing)
@@ -258,7 +414,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
                     cancellationToken);
             }
 
-            if (destination.Target == "claude")
+            if (destination.RequiresInvocationPolicy)
             {
                 var skillPath = Path.Combine(temporary, "SKILL.md");
                 var skill = await File.ReadAllTextAsync(skillPath, cancellationToken);
@@ -323,6 +479,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
     private async Task<SkillInspection> InspectAsync(
         string path,
         string expectedTarget,
+        bool requiresInvocationPolicy,
         string bundledSkillVersion,
         CancellationToken cancellationToken)
     {
@@ -365,10 +522,12 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
                 return new SkillInspection(SkillInstallationState.Modified, manifest, description);
             }
 
-            var bundledHash = await MechanicsHashAsync(assetRoot, cancellationToken, expectedTarget);
+            var bundledHash = await MechanicsHashAsync(
+                assetRoot,
+                cancellationToken,
+                requiresInvocationPolicy);
             var state = manifest.InstalledSkillVersion == installedContentVersion &&
                         installedContentVersion == bundledSkillVersion &&
-                        manifest.CliVersion == ThisAssemblyVersion() &&
                         string.Equals(
                             manifest.MechanicsSha256,
                             bundledHash,
@@ -396,31 +555,23 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         {
             throw new TrackerException(
                 "SKILL_AGENT_REQUIRED",
-                "Automatic agent detection did not identify one runtime. Use --agent codex, claude, copilot, or all.",
+                "Automatic agent detection did not identify one runtime. Use --agent " +
+                $"{string.Join(", ", agents.Select(value => value.Id))}, or all.",
                 2);
         }
-        if (normalized is not ("codex" or "claude" or "copilot" or "all"))
-        {
-            var selected = normalized
+        var selected = normalized == "all"
+            ? agents.Where(value => value.SkillTarget is not null).Select(value => value.Id).ToArray()
+            : normalized
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToArray();
-            if (selected.Length == 0 ||
-                selected.Any(value => value is not ("codex" or "claude" or "copilot")))
-            {
-                throw new TrackerException("ARGUMENT_INVALID", $"Unsupported skill agent '{agent}'.", 2);
-            }
-            return DestinationsFor(
-                selected,
-                scope,
-                workingDirectory,
-                projectDirectory);
+        if (selected.Length == 0 || selected.Any(value => !agents.Any(descriptor =>
+                descriptor.SkillTarget is not null &&
+                string.Equals(descriptor.Id, value, StringComparison.OrdinalIgnoreCase))))
+        {
+            throw new TrackerException("ARGUMENT_INVALID", $"Unsupported skill agent '{agent}'.", 2);
         }
-
-        var agents = normalized == "all"
-            ? new[] { "codex", "copilot", "claude" }
-            : new[] { normalized };
-        return DestinationsFor(agents, scope, workingDirectory, projectDirectory);
+        return DestinationsFor(selected, scope, workingDirectory, projectDirectory);
     }
 
     private List<SkillDestination> DestinationsFor(
@@ -432,31 +583,29 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         var root = scope == SkillScope.User
             ? userHome
             : Path.GetFullPath(projectDirectory ?? FindProjectRoot(workingDirectory));
-        var result = new List<SkillDestination>();
-        var codex = agents.Contains("codex", StringComparer.OrdinalIgnoreCase);
-        var copilot = agents.Contains("copilot", StringComparer.OrdinalIgnoreCase);
-        if (codex || copilot)
-        {
-            var destinationAgent = "codex-copilot";
-            if (!codex)
-                destinationAgent = "copilot";
-            else if (!copilot)
-                destinationAgent = "codex";
-            result.Add(new SkillDestination(
-                destinationAgent,
-                "codex-copilot",
-                scope,
-                Path.Combine(root, ".agents", "skills", SkillName)));
-        }
-        if (agents.Contains("claude", StringComparer.OrdinalIgnoreCase))
-        {
-            result.Add(new SkillDestination(
-                "claude",
-                "claude",
-                scope,
-                Path.Combine(root, ".claude", "skills", SkillName)));
-        }
-        return result;
+        return this.agents
+            .Where(descriptor => descriptor.SkillTarget is not null &&
+                agents.Contains(descriptor.Id, StringComparer.OrdinalIgnoreCase))
+            .GroupBy(descriptor => descriptor.SkillTarget!.Id, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(group => group.First().SkillTarget!.RelativeDirectory, StringComparer.Ordinal)
+            .Select(group =>
+            {
+                var selected = group.OrderBy(value => value.Id, StringComparer.Ordinal).ToArray();
+                var target = selected[0].SkillTarget!;
+                var destinationAgent = selected.Length == 1
+                    ? selected[0].Id
+                    : string.Join("-", selected.Select(value => value.Id));
+                return new SkillDestination(
+                    destinationAgent,
+                    target.Id,
+                    scope,
+                    Path.Combine(
+                        root,
+                        target.RelativeDirectory.Replace(
+                            '/', Path.DirectorySeparatorChar)),
+                    target.RequiresInvocationPolicy);
+            })
+            .ToList();
     }
 
     private string BundledSkillVersion()
@@ -509,7 +658,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
     private static async Task<string> MechanicsHashAsync(
         string root,
         CancellationToken cancellationToken,
-        string? target = null)
+        bool requiresInvocationPolicy = false)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
@@ -521,7 +670,7 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
             var content = await File.ReadAllTextAsync(file, cancellationToken);
             if (relative == "SKILL.md")
             {
-                if (target == "claude")
+                if (requiresInvocationPolicy)
                 {
                     content = AddClaudeInvocationPolicy(content);
                 }
@@ -634,7 +783,12 @@ public sealed class SkillManager(string assetRoot, string userHome) : ISkillMana
         skillVersion,
         preserved);
 
-    private sealed record SkillDestination(string Agent, string Target, SkillScope Scope, string Path);
+    private sealed record SkillDestination(
+        string Agent,
+        string Target,
+        SkillScope Scope,
+        string Path,
+        bool RequiresInvocationPolicy);
     private sealed record SkillInspection(
         SkillInstallationState State,
         SkillManifest? Manifest,

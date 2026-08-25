@@ -10,7 +10,8 @@ public sealed class WorkerServiceCheckTests
     [
         new ClaudeAgentAdapter(),
         new CodexAgentAdapter(),
-        new CopilotAgentAdapter()
+        new CopilotAgentAdapter(),
+        new OpenCodeAgentAdapter()
     ];
 
     [Fact]
@@ -30,8 +31,8 @@ public sealed class WorkerServiceCheckTests
             },
             CancellationToken.None);
 
-        Assert.Equal(["claude", "codex", "copilot"], events.Select(value => value.Agent));
-        Assert.Equal(3, runner.Invocations.Count);
+        Assert.Equal(["claude", "codex", "copilot", "opencode"], events.Select(value => value.Agent));
+        Assert.Equal(4, runner.Invocations.Count);
         Assert.All(events, value => Assert.Contains("session=", value.Message));
     }
 

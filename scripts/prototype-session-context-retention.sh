@@ -49,7 +49,7 @@ set -uo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
-AGENTS="claude codex copilot"
+AGENTS="claude codex copilot opencode"
 CONTEXT_CHARS=100000
 RESUME_TURNS=8
 PRESSURE_CHARS=0
@@ -64,7 +64,7 @@ usage() {
         "LIVE and BILLED: set WRIGHTY_RUN_SESSION_RETENTION_LIVE=1 to acknowledge." \
         "" \
         "Options:" \
-        "  --agents \"a b\"      Vendors to probe; defaults to 'claude codex copilot'." \
+        "  --agents \"a b\"      Vendors to probe; defaults to 'claude codex copilot opencode'." \
         "  --context-chars N   Size of the turn-1 context; defaults to 100000." \
         "  --resume-turns N    Trivial resume turns before the recall turn; defaults to 8." \
         "  --pressure N        Pad each resume turn with N characters to force the window toward" \
@@ -236,6 +236,23 @@ resume_copilot() {
     return
 }
 
+start_opencode() {
+    local prompt=$1 _session=$2 out=$3
+    printf '%s' "$prompt" |
+        OPENCODE_CONFIG_CONTENT='{"permission":{"*":"deny"}}' \
+            opencode run --pure --format json --auto --agent build --dir "$WORK_DIR" >"$out" 2>&1
+    jq -r 'select(.sessionID? != null) | .sessionID' "$out" | head -1
+    return
+}
+resume_opencode() {
+    local prompt=$1 session=$2 out=$3
+    printf '%s' "$prompt" |
+        OPENCODE_CONFIG_CONTENT='{"permission":{"*":"deny"}}' \
+            opencode run --pure --format json --auto --agent build --dir "$WORK_DIR" \
+                --session "$session" >"$out" 2>&1
+    return
+}
+
 # A failed turn must never be scored. An overloaded or errored vendor call produces empty output,
 # which greps as "no sentinel found" and would be recorded as a confident LOST that never happened.
 # A false RETAINED is not possible — a failed call cannot emit a UUID it never saw — so this only
@@ -398,7 +415,7 @@ done
 mkdir -p "$(dirname "$RECORD_PATH")"
 
 # A narrow or failed run must not clobber a broader measured one. The validation runs that probe a
-# single vendor would otherwise silently replace a full three-vendor record with a worse one.
+# single vendor would otherwise silently replace a broader all-vendor record with a worse one.
 if [[ -f "$RECORD_PATH" ]]; then
     EXISTING_SCORED=$(jq -r '.scored // ([.observations[] | select(.verdict != "error")] | length)' \
         "$RECORD_PATH" 2>/dev/null || printf '0')

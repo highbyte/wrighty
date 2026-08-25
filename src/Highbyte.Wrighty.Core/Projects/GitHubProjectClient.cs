@@ -11,10 +11,13 @@ using static Highbyte.Wrighty.Text.Grammar;
 
 namespace Highbyte.Wrighty.Projects;
 
-public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjectClient
+public sealed class GitHubProjectClient : IProjectClient
 {
     private const string RestApiVersion = "2026-03-10";
     private const string ContextApprovalUnavailableCode = "CONTEXT_APPROVAL_UNAVAILABLE";
+    private readonly GhApi api;
+    private readonly INodeIdCache cache;
+    private readonly IReadOnlyList<AgentDescriptor> agents;
     private readonly ConcurrentDictionary<string, RestProjectOwner> restOwners = new();
     private readonly ConcurrentDictionary<string, byte> restUnavailable = new();
 
@@ -283,13 +286,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     private const string NodeIdProperty = "node_id";
     private const string ProjectNotInitializedCode = "PROJECT_NOT_INITIALIZED";
 
-    private static readonly RequiredAgentOption[] RequiredAgentOptions =
-    [
-        new("Codex", "OpenAI Codex agent", "GREEN"),
-        new("Claude", "Anthropic Claude Code agent", OrangeOptionColor),
-        new("Copilot", "GitHub Copilot agent", "BLUE"),
-        new(OtherAgentOption, "Another agent runtime", "GRAY")
-    ];
+    private readonly RequiredAgentOption[] RequiredAgentOptions;
     private static readonly RequiredAgentOption[] RequiredClaimantOptions =
     [
         new("Agent", "Agent claimant", "GREEN"),
@@ -302,13 +299,39 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         new("Manual only", "No unattended Wrighty worker launch is allowed", "GRAY"),
         new("Automatic allowed", "A Wrighty worker may claim and run this item", "GREEN")
     ];
-    private static readonly RequiredAgentOption[] RequiredAgentPolicyOptions =
-    [
-        new(RepositoryDefaultOption, "Use the configured default agent", "GRAY"),
-        new("Claude", "Use Anthropic Claude Code", OrangeOptionColor),
-        new("Codex", "Use OpenAI Codex", "GREEN"),
-        new("Copilot", "Use GitHub Copilot", "BLUE")
-    ];
+    private readonly RequiredAgentOption[] RequiredAgentPolicyOptions;
+
+    public GitHubProjectClient(
+        GhApi api,
+        INodeIdCache cache,
+        IReadOnlyList<AgentDescriptor>? agentDescriptors = null)
+    {
+        this.api = api;
+        this.cache = cache;
+        agents = agentDescriptors ?? BuiltInAgentRegistry.Descriptors;
+        RequiredAgentOptions =
+        [
+            .. agents
+                .Where(descriptor => descriptor.Projection is not null)
+                .OrderBy(descriptor => descriptor.Projection!.ProjectionOrder)
+                .Select(descriptor => new RequiredAgentOption(
+                    descriptor.Projection!.OptionName,
+                    descriptor.Projection.ProjectionDescription,
+                    descriptor.Projection.Color)),
+            new(OtherAgentOption, "Another agent runtime", "GRAY")
+        ];
+        RequiredAgentPolicyOptions =
+        [
+            new(RepositoryDefaultOption, "Use the configured default agent", "GRAY"),
+            .. agents
+                .Where(descriptor => descriptor.Projection is not null)
+                .OrderBy(descriptor => descriptor.Projection!.PolicyOrder)
+                .Select(descriptor => new RequiredAgentOption(
+                    descriptor.Projection!.OptionName,
+                    descriptor.Projection.PolicyDescription,
+                    descriptor.Projection.Color))
+        ];
+    }
     /// <summary>
     /// The profile field's options, computed from <c>worker.executionProfiles</c> rather than
     /// declared as a constant like every other single-select here. The vocabulary is repository
@@ -633,7 +656,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
-    private static bool TryParseRestIssue(
+    private bool TryParseRestIssue(
         TrackerConfig config,
         JsonElement node,
         out GitHubProjectItem item)
@@ -789,7 +812,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             .GetProperty("items");
     }
 
-    private static void AddMatchingItems(
+    private void AddMatchingItems(
         TrackerConfig config,
         JsonElement connection,
         string? status,
@@ -876,7 +899,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
                 StringComparison.Ordinal))
             .ToArray();
 
-    private static void AddCreationMatches(
+    private void AddCreationMatches(
         TrackerConfig config,
         JsonElement connection,
         string creationAttemptId,
@@ -1931,7 +1954,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
     }
 
-    private static string? ResolveAgentOptionId(
+    private string? ResolveAgentOptionId(
         ProjectMetadata metadata,
         string? agentType)
     {
@@ -1940,13 +1963,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             return null;
         }
 
-        var optionName = agentType switch
-        {
-            "codex" => "Codex",
-            "claude" => "Claude",
-            "copilot" => "Copilot",
-            _ => OtherAgentOption
-        };
+        var optionName = agents.FirstOrDefault(descriptor =>
+                string.Equals(descriptor.Id, agentType, StringComparison.OrdinalIgnoreCase))
+            ?.Projection?.OptionName ?? OtherAgentOption;
         return metadata.AgentOptions!.TryGetValue(optionName, out var optionId)
             ? optionId
             : throw new TrackerException(
@@ -2038,13 +2057,9 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         }
         else
         {
-            var optionName = agentType switch
-            {
-                "codex" => "Codex",
-                "claude" => "Claude",
-                "copilot" => "Copilot",
-                _ => OtherAgentOption
-            };
+            var optionName = agents.FirstOrDefault(descriptor =>
+                    string.Equals(descriptor.Id, agentType, StringComparison.OrdinalIgnoreCase))
+                ?.Projection?.OptionName ?? OtherAgentOption;
             if (!metadata.AgentOptions!.TryGetValue(optionName, out var optionId))
             {
                 throw NotInitialized(config);
@@ -2433,7 +2448,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         return new ProjectSchema(project.GetProperty("id").GetString()!, fields);
     }
 
-    private static ProjectMetadata BuildMetadata(
+    private ProjectMetadata BuildMetadata(
         TrackerConfig config,
         ProjectSchema schema,
         bool requireAgentContext,
@@ -2553,7 +2568,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         return metadata;
     }
 
-    private static List<string> ValidateAndPlanInitialization(
+    private List<string> ValidateAndPlanInitialization(
         TrackerConfig config,
         ProjectSchema schema,
         bool projectCreated)
@@ -3017,12 +3032,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
     // The session-ID and workspace-path fields are optional forensics projections: their
     // authoritative copies live in the claim comments and the machine-local runtime store, so a
     // Project without them still supports every claim operation. Writes skip the absent fields.
-    private static bool HasAgentContextSchema(ProjectMetadata metadata) =>
+    private bool HasAgentContextSchema(ProjectMetadata metadata) =>
         metadata.ClaimAgentFieldId is not null &&
         metadata.AgentOptions is not null &&
         RequiredAgentOptions.All(required => metadata.AgentOptions.ContainsKey(required.Name));
 
-    private static bool HasPolicySchema(ProjectMetadata metadata) =>
+    private bool HasPolicySchema(ProjectMetadata metadata) =>
         metadata.ExecutionPolicyFieldId is not null &&
         metadata.AgentPolicyFieldId is not null &&
         metadata.ExecutionPolicyOptions is not null &&
@@ -3034,7 +3049,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
 
     // The not-before field is an optional forensics projection; `Wrighty dispatch - detail`
     // carries the operator-facing summary, so recovery presentation works without it.
-    private static bool HasRecoveryPresentationSchema(ProjectMetadata metadata) =>
+    private bool HasRecoveryPresentationSchema(ProjectMetadata metadata) =>
         metadata.DispatchStateFieldId is not null &&
         metadata.DispatchStateOptionOptions is not null &&
         metadata.DispatchAgentFieldId is not null &&
@@ -3084,7 +3099,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         $"Project field '{name}' exists but is not a {expectedType} field.",
         5);
 
-    private static bool TryParseIssue(
+    private bool TryParseIssue(
         TrackerConfig config,
         JsonElement node,
         out GitHubProjectItem item)
@@ -3397,7 +3412,7 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             : trimmed.ToLowerInvariant();
     }
 
-    private static string? DecodeAgentPolicy(string? value)
+    private string? DecodeAgentPolicy(string? value)
     {
         if (value is null ||
             string.Equals(value.Trim(), RepositoryDefaultOption, StringComparison.OrdinalIgnoreCase))
@@ -3405,13 +3420,12 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
             return null;
         }
 
-        return value.Trim().ToLowerInvariant() switch
-        {
-            "claude" => "claude",
-            "codex" => "codex",
-            "copilot" => "copilot",
-            _ => throw InvalidPolicyValue("Wrighty policy - agent", value)
-        };
+        return agents.FirstOrDefault(descriptor =>
+                string.Equals(
+                    descriptor.Projection?.OptionName,
+                    value.Trim(),
+                    StringComparison.OrdinalIgnoreCase))
+            ?.Id ?? throw InvalidPolicyValue("Wrighty policy - agent", value);
     }
 
     private static TrackerException InvalidPolicyValue(string fieldName, string value) => new(
@@ -3420,26 +3434,22 @@ public sealed class GitHubProjectClient(GhApi api, INodeIdCache cache) : IProjec
         "Automatic execution is disabled until the value is corrected.",
         5);
 
-    private static string CanonicalAgentName(string agentPolicy) =>
-        agentPolicy.Trim().ToLowerInvariant() switch
-        {
-            "claude" => "Claude",
-            "codex" => "Codex",
-            "copilot" => "Copilot",
-            _ => throw new TrackerException(
+    private string CanonicalAgentName(string agentPolicy) =>
+        agents.FirstOrDefault(descriptor =>
+                string.Equals(descriptor.Id, agentPolicy.Trim(), StringComparison.OrdinalIgnoreCase))
+            ?.Projection?.OptionName ?? throw new TrackerException(
                 "ARGUMENT_INVALID",
-                "worker agent must be claude, codex, or copilot.",
-                2)
-        };
+                $"worker agent must be {DescribeAgentIds()}.",
+                2);
 
-    private static string CanonicalProjectionAgentName(string agent) =>
-        agent.Trim().ToLowerInvariant() switch
-        {
-            "claude" => "Claude",
-            "codex" => "Codex",
-            "copilot" => "Copilot",
-            _ => OtherAgentOption
-        };
+    private string CanonicalProjectionAgentName(string agent) =>
+        agents.FirstOrDefault(descriptor =>
+                string.Equals(descriptor.Id, agent.Trim(), StringComparison.OrdinalIgnoreCase))
+            ?.Projection?.OptionName ?? OtherAgentOption;
+
+    private string DescribeAgentIds() => string.Join(
+        ", ",
+        agents.Select(descriptor => descriptor.Id).Order(StringComparer.Ordinal));
 
     private static string? DispatchStateOption(string? dispatchState) => dispatchState switch
     {

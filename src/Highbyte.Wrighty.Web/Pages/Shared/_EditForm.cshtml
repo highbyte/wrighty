@@ -38,9 +38,9 @@
         <label>Agent policy
           <select aria-describedby="agent-policy-locked-help" disabled>
             <option value="">No item preference</option>
-            @foreach (var agent in new[] { "claude", "codex", "copilot" })
+            @foreach (var agent in Model.AgentOptions)
             {
-              <option value="@agent" selected="@(string.Equals(agent, Model.AgentPolicy, StringComparison.OrdinalIgnoreCase))">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
+              <option value="@agent.Id" selected="@(string.Equals(agent.Id, Model.AgentPolicy, StringComparison.OrdinalIgnoreCase))">@agent.DisplayName</option>
             }
           </select>
           <input type="hidden" name="agentPolicy" value="@Model.AgentPolicy">
@@ -65,9 +65,9 @@
         <label>Agent policy
           <select name="agentPolicy">
             <option value="">No item preference</option>
-            @foreach (var agent in new[] { "claude", "codex", "copilot" })
+            @foreach (var agent in Model.AgentOptions)
             {
-              <option value="@agent" selected="@(string.Equals(agent, Model.AgentPolicy, StringComparison.OrdinalIgnoreCase))">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
+              <option value="@agent.Id" selected="@(string.Equals(agent.Id, Model.AgentPolicy, StringComparison.OrdinalIgnoreCase))">@agent.DisplayName</option>
             }
           </select>
           <small>A worker-level <code>--agent</code> overrides this policy.</small>

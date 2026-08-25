@@ -1,14 +1,20 @@
 # Supported agents and surfaces
 
-Wrighty supports Claude Code, Codex, and GitHub Copilot. Support is specific to a capability and
+Wrighty supports Claude Code, Codex, GitHub Copilot, and OpenCode. Support is specific to a capability and
 surface: an agent may be available to the headless worker, through the Wrighty skill, through its
 interactive CLI, or through a Desktop application.
 
-| Agent family | Wrighty skill | Headless worker | Resume or review a recorded session |
-| --- | --- | --- | --- |
-| **Claude** | Claude Code CLI and the Claude Code surface in Desktop | Start and resume through the Claude Code CLI | Claude Code CLI; Wrighty can open Claude Desktop on macOS and Windows, and that integration is experimental |
-| **Codex** | Codex CLI, IDE extension, and Desktop | Start and resume through the Codex CLI | Codex CLI; Wrighty can open Codex in ChatGPT Desktop on macOS and Windows |
-| **GitHub Copilot** | Copilot CLI and surfaces that support skills or can be prompted to use one | Start and resume through the Copilot CLI | Copilot CLI; Wrighty can open GitHub Copilot Desktop on macOS, Windows, and Linux; see the limitations below |
+| Agent family | Headless start/resume | Model discovery | Session export for handoff | Context detection | Interactive surfaces |
+| --- | --- | --- | --- | --- | --- |
+| **Claude** | Yes, through Claude Code CLI | Yes | Yes, from the local Claude Code transcript store | Session and presence signals from Claude Code | Wrighty skill and CLI; Claude Desktop on macOS and Windows is experimental |
+| **Codex** | Yes, through Codex CLI | Yes | Yes, from the local Codex rollout store | Thread signal from Codex | Wrighty skill and CLI; ChatGPT Desktop on macOS and Windows |
+| **GitHub Copilot** | Yes, through Copilot CLI | Yes | Yes for worker-owned sessions when Wrighty's requested share export completes | Session signal from Copilot CLI | Wrighty skill and CLI; GitHub Copilot Desktop on macOS, Windows, and Linux |
+| **OpenCode** | Yes, through OpenCode CLI | Yes, including provider-qualified model IDs and known variants | Yes, through the bounded local `opencode export` command | Presence signal from OpenCode; its CLI does not expose a session environment variable | Wrighty skill and CLI; no retained-session Desktop action |
+
+OpenCode is a multi-provider runtime. Wrighty's current installation-local capacity circuit is
+keyed by agent ID, so an OpenCode capacity failure temporarily represents the whole OpenCode
+integration rather than one underlying provider/model. OpenCode is consequently not added to the
+default cross-agent fallback graph; configure it explicitly when that tradeoff is appropriate.
 
 The worker always uses a locally installed agent CLI. Skill support describes where the bundled
 Wrighty instructions can be used interactively; it does not mean every listed surface can run a
@@ -20,7 +26,7 @@ For headless operation, **supported** means that Wrighty has an adapter for the 
 **Installed** means that the corresponding CLI executable can be found on the current machine, and
 **ready** means that `wrighty worker --check` can start it and obtain a usable session handle.
 
-All three agent families support headless start and same-agent resume. Their permission and session
+All four agent families support headless start and same-agent resume. Their permission and session
 interfaces differ. See [Autonomous worker mode](worker.md#local-agent-availability) for discovery
 and readiness, [spawned-agent permissions](worker.md#spawned-agent-permissions) for the effective
 sandbox behavior, and the [verified vendor capability matrix](worker.md#verified-vendor-capability-matrix)
@@ -28,11 +34,11 @@ for the underlying CLI operations.
 
 ## Session handoff
 
-Claude, Codex, and Copilot can all be targets of a cross-agent handoff. Claude and Codex normally
-provide their local session transcripts when they are the source. A Copilot transcript is available
-only for worker-owned sessions for which Wrighty's requested export completed. If no transcript is
-available, the handoff still starts the target agent with the retained workspace and a
-workspace-only context packet.
+All four agent families can be targets of a cross-agent handoff. Claude and Codex normally provide
+their local session transcripts when they are the source. OpenCode exports a recorded session
+through its CLI. A Copilot transcript is available only for worker-owned sessions for which
+Wrighty's requested export completed. If no transcript is available, the handoff still starts the
+target agent with the retained workspace and a workspace-only context packet.
 
 See [Usage recovery and agent handoff](usage-recovery-and-agent-handoff.md#cross-agent-handoff) for
 the workflow and the [session export matrix](worker.md#session-export-for-cross-agent-handoff) for
@@ -71,6 +77,10 @@ document their Desktop address shapes. Copilot Desktop must also be configured t
 sessions, and some versions may open its Home view instead of the requested session; opening the
 Copilot CLI remains the fallback. Claude Desktop session opening uses an undocumented vendor link
 and is therefore offered as an experimental feature that can be disabled.
+
+OpenCode can open a project or create a session in its Desktop application, but its documented URI
+does not address an existing session. Wrighty therefore offers OpenCode CLI takeover and does not
+present a misleading Desktop resume action.
 
 See [Web console](web-console.md) for the ownership rules, platform checks, and current Desktop
 limitations.

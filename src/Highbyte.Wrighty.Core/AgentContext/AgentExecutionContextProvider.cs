@@ -1,12 +1,37 @@
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Processes;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.AgentContext;
 
-public sealed class AgentExecutionContextProvider(
-    IReadOnlyDictionary<string, string?> environment) : IAgentExecutionContextProvider
+public sealed class AgentExecutionContextProvider : IAgentExecutionContextProvider
 {
-    private static readonly HashSet<string> SupportedAgentTypes =
-        new(StringComparer.Ordinal) { "codex", "claude", "copilot", "other" };
+    private readonly IReadOnlyDictionary<string, string?> environment;
+    private readonly IReadOnlyList<IAgentContextDetector> detectors;
+    private readonly HashSet<string> supportedAgentTypes;
+
+    public AgentExecutionContextProvider(
+        IReadOnlyDictionary<string, string?> environment)
+        : this(environment, BuiltInAgentRegistry.Create(new PathExecutableResolver()))
+    {
+    }
+
+    public AgentExecutionContextProvider(
+        IReadOnlyDictionary<string, string?> environment,
+        AgentRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(environment);
+        ArgumentNullException.ThrowIfNull(registry);
+        this.environment = environment;
+        detectors = Array.AsReadOnly(registry.Integrations
+            .Select(integration => integration.ContextDetector)
+            .Where(detector => detector is not null)
+            .Select(detector => detector!)
+            .ToArray());
+        supportedAgentTypes = new HashSet<string>(
+            [.. registry.Ids, "other"],
+            StringComparer.Ordinal);
+    }
 
     public AgentExecutionContext Resolve(AgentContextInput input)
     {
@@ -179,14 +204,13 @@ public sealed class AgentExecutionContextProvider(
 
     private AgentExecutionContext DetectVendorContext()
     {
-        var codex = Vendor("codex", Get("CODEX_THREAD_ID"));
-        var claude = Vendor(
-            "claude",
-            FirstNonEmpty(Get("CLAUDE_CODE_REMOTE_SESSION_ID"), Get("CLAUDE_CODE_SESSION_ID")));
-        var copilot = Vendor("copilot", Get("COPILOT_AGENT_SESSION_ID"));
-        var strong = new[] { codex, claude, copilot }
-            .Where(context => context is not null)
-            .Cast<AgentExecutionContext>()
+        var detections = detectors
+            .Select(detector => detector.Detect(environment))
+            .Where(detection => detection.IsPresent)
+            .ToArray();
+        var strong = detections
+            .Where(detection => !string.IsNullOrWhiteSpace(detection.SessionId))
+            .Select(detection => Vendor(detection.Agent, detection.SessionId!))
             .ToArray();
 
         if (strong.Length > 1)
@@ -203,25 +227,27 @@ public sealed class AgentExecutionContextProvider(
             return strong[0];
         }
 
-        if (string.Equals(Get("CLAUDECODE"), "1", StringComparison.Ordinal) ||
-            IsTrue(Get("CLAUDE_CODE_REMOTE")))
+        var weak = detections.Where(detection => detection.SessionId is null).ToArray();
+        if (weak.Length > 1)
         {
             return new AgentExecutionContext(
-                "claude",
+                null,
+                null,
+                AgentContextSource.None,
+                "Conflicting agent runtime signals were found; use --agent-type and --session-id to identify the active session.");
+        }
+
+        if (weak.Length == 1)
+            return new AgentExecutionContext(
+                weak[0].Agent,
                 null,
                 AgentContextSource.VendorEnvironment);
-        }
 
         return AgentExecutionContext.None;
     }
 
-    private AgentExecutionContext? Vendor(string agentType, string? sessionId)
+    private AgentExecutionContext Vendor(string agentType, string sessionId)
     {
-        if (string.IsNullOrWhiteSpace(sessionId))
-        {
-            return null;
-        }
-
         try
         {
             return new AgentExecutionContext(
@@ -242,7 +268,7 @@ public sealed class AgentExecutionContextProvider(
     private string? Get(string name) =>
         environment.TryGetValue(name, out var value) ? value : null;
 
-    private static string? NormalizeAgentType(string? value, string source)
+    private string? NormalizeAgentType(string? value, string source)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
@@ -250,11 +276,12 @@ public sealed class AgentExecutionContextProvider(
         }
 
         var normalized = value.Trim().ToLowerInvariant();
-        if (!SupportedAgentTypes.Contains(normalized))
+        if (!supportedAgentTypes.Contains(normalized))
         {
             throw new TrackerException(
                 "ARGUMENT_INVALID",
-                $"{source} must be one of: codex, claude, copilot, other.",
+                $"{source} must be one of: " +
+                $"{string.Join(", ", supportedAgentTypes.Where(agent => agent != "other").Order())}, other.",
                 2);
         }
 
@@ -312,9 +339,6 @@ public sealed class AgentExecutionContextProvider(
         }
         return value.Trim();
     }
-
-    private static string? FirstNonEmpty(string? preferred, string? fallback) =>
-        !string.IsNullOrWhiteSpace(preferred) ? preferred : fallback;
 
     private static bool IsTrue(string? value) =>
         string.Equals(value, "1", StringComparison.OrdinalIgnoreCase) ||

@@ -37,11 +37,14 @@ public sealed record WrightyWebServerDependencies(
     StorageLocationCatalog? StorageLocations = null,
     GitHubProjectUrlResolver? GitHubProjectUrls = null,
     WorkerService? WorkerService = null,
-    ILocalHostNameProvider? LocalHostNameProvider = null);
+    ILocalHostNameProvider? LocalHostNameProvider = null,
+    AgentRegistry? AgentRegistry = null,
+    IWebSkillMaintenance? SkillMaintenance = null);
 
 public sealed record WebAgentSessionServices(
     IWorkspaceInventory WorkspaceInventory,
     IReadOnlyDictionary<string, IAgentAdapter> AdaptersByName,
+    IReadOnlyList<AgentDescriptor> AgentDescriptors,
     IAgentRuntimeCatalog RuntimeCatalog,
     ILocalAgentSessionLauncher Launcher);
 
@@ -55,7 +58,8 @@ public sealed record WebOperationsServices(
     Highbyte.Wrighty.Settings.IUserConfigurationService? UserConfiguration = null,
     Workers.AgentModelDiscoveries? ModelDiscoveries = null,
     StorageLocationCatalog? StorageLocations = null,
-    GitHubProjectUrlResolver? GitHubProjectUrls = null);
+    GitHubProjectUrlResolver? GitHubProjectUrls = null,
+    IWebSkillMaintenance? SkillMaintenance = null);
 
 public sealed class WrightyWebServer(
     ITrackerConfigLoader configLoader,
@@ -169,8 +173,12 @@ public sealed class WrightyWebServer(
         builder.Services.AddSingleton(
             dependencies.ProviderCapacityProbeService ??
             UnavailableProviderCapacityProbeService.Instance);
-        var registeredAdapters = (dependencies.AgentAdapters ??
-            [new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter()])
+        var executableResolver = new PathExecutableResolver();
+        var registry = dependencies.AgentRegistry ??
+            (dependencies.AgentAdapters is null
+                ? BuiltInAgentRegistry.Create(executableResolver)
+                : null);
+        var registeredAdapters = (registry?.ExecutionAdapters ?? dependencies.AgentAdapters!)
             .ToArray();
         foreach (var adapter in registeredAdapters)
             builder.Services.AddSingleton<IAgentAdapter>(adapter);
@@ -178,14 +186,18 @@ public sealed class WrightyWebServer(
         if (runtimeCatalog is null)
         {
             IAgentRuntimeCatalog physical =
-                new AgentRuntimeCatalog(registeredAdapters, new PathExecutableResolver());
+                registry is null
+                    ? new AgentRuntimeCatalog(registeredAdapters, executableResolver)
+                    : new AgentRuntimeCatalog(registry, executableResolver);
             runtimeCatalog = configLoader is ITrackerConfigStore store
                 ? new TestingAgentRuntimeCatalog(physical, store, workingDirectory)
                 : physical;
         }
         var localLauncher =
             dependencies.LocalAgentSessionLauncher ??
-            new LocalAgentSessionLauncher(new PathExecutableResolver());
+            (registry is null
+                ? new LocalAgentSessionLauncher(executableResolver)
+                : new LocalAgentSessionLauncher(executableResolver, registry));
         builder.Services.AddSingleton(runtimeCatalog);
         builder.Services.AddSingleton(localLauncher);
         builder.Services.AddSingleton(new WebAgentSessionServices(
@@ -193,6 +205,14 @@ public sealed class WrightyWebServer(
             registeredAdapters.ToDictionary(
                 adapter => adapter.Agent,
                 StringComparer.OrdinalIgnoreCase),
+            registry?.WorkerDescriptors ?? registeredAdapters
+                .Select(adapter => new AgentDescriptor(
+                    adapter.Agent,
+                    char.ToUpperInvariant(adapter.Agent[0]) + adapter.Agent[1..],
+                    adapter.Agent,
+                    adapter.ExecutableName,
+                    AgentCapabilities.WorkerExecution))
+                .ToArray(),
             runtimeCatalog,
             localLauncher));
         builder.Services.AddSingleton(new WebOperationsServices(
@@ -201,10 +221,13 @@ public sealed class WrightyWebServer(
             hostedWorker,
             dependencies.ContextApproval,
             dependencies.UserConfiguration,
-            dependencies.ModelDiscoveries,
+            dependencies.ModelDiscoveries ?? (registry is null
+                ? null
+                : new Workers.AgentModelDiscoveries(registry, runtimeCatalog)),
             dependencies.StorageLocations ?? new StorageLocationCatalog(new CachePaths(
                 Environment.GetEnvironmentVariable("WRIGHTY_CACHE_DIR"))),
-            dependencies.GitHubProjectUrls ?? GitHubProjectUrlResolver.Unavailable));
+            dependencies.GitHubProjectUrls ?? GitHubProjectUrlResolver.Unavailable,
+            dependencies.SkillMaintenance));
         builder.Services.AddSingleton<MarkdownRenderer>();
         builder.Services.AddRazorPages().AddApplicationPart(typeof(WrightyWebServer).Assembly);
         return builder;
@@ -399,9 +422,17 @@ public sealed class WrightyWebServer(
         string.Equals(handler, "StartHostedWorker", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "StopWorker", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "UserConfiguration", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "SetAgentEnabled", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ProfileMapping", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ValidateTarget", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ApproveContext", StringComparison.OrdinalIgnoreCase) ||
+        // Skill maintenance changes agent configuration, not backend-owned item content. Keep it
+        // available regardless of which project backend the console displays.
+        string.Equals(handler, "InstallSkill", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "UpdateSkill", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "UpdateAgentSkill", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "UninstallSkill", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "MaintainAllSkills", StringComparison.OrdinalIgnoreCase) ||
         // Opening a retained vendor session operates on Wrighty's local claim/session control
         // plane, not backend-owned item content. Operations offers these on both Local Markdown
         // and GitHub, so they are shared even though their target is one item.
@@ -411,7 +442,7 @@ public sealed class WrightyWebServer(
         // backend-specific, and the console renders its buttons on GitHub — where, until this was
         // measured, every one of them returned 405. Pre-existing, and the same omission as above.
         string.Equals(handler, "ProbeProvider", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(handler, "ProbeAllProviders", StringComparison.OrdinalIgnoreCase);
+        string.Equals(handler, "ProbeEnabledAgents", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsLocalSurfaceHandler(string? handler) =>
         string.Equals(handler, "Board", StringComparison.OrdinalIgnoreCase) ||

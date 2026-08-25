@@ -29,6 +29,40 @@ public sealed class UserSettingsTests : IDisposable
     }
 
     [Fact]
+    public async Task Enabled_agents_round_trip_and_legacy_defaults_follow_detection()
+    {
+        var defaults = new UserSettings();
+        Assert.True(defaults.IsAgentEnabled("claude", detected: true));
+        Assert.False(defaults.IsAgentEnabled("claude", detected: false));
+
+        var store = Store();
+        await store.SaveAsync(
+            defaults with { EnabledAgents = ["codex", "OpenCode"] },
+            CancellationToken.None);
+
+        var reloaded = await store.LoadAsync(CancellationToken.None);
+        Assert.True(reloaded.IsAgentSelected("CODEX"));
+        Assert.False(reloaded.IsAgentEnabled("CODEX", detected: false));
+        Assert.True(reloaded.IsAgentEnabled("opencode", detected: true));
+        Assert.False(reloaded.IsAgentEnabled("claude", detected: true));
+    }
+
+    [Fact]
+    public void Explicit_agent_selection_overrides_the_automatic_enablement_allowlist()
+    {
+        var settings = new UserSettings { EnabledAgents = ["claude"] };
+
+        Assert.False(AgentEnablementPolicy.AllowsManagedWork(
+            settings, "opencode", explicitlySelectedAgent: null, detected: true));
+        Assert.True(AgentEnablementPolicy.AllowsManagedWork(
+            settings, "opencode", explicitlySelectedAgent: "OpenCode", detected: true));
+        Assert.False(AgentEnablementPolicy.AllowsManagedWork(
+            settings, "opencode", explicitlySelectedAgent: "OpenCode", detected: false));
+        Assert.True(AgentEnablementPolicy.AllowsManagedWork(
+            settings, "claude", explicitlySelectedAgent: null, detected: true));
+    }
+
+    [Fact]
     public async Task Corrupt_settings_file_degrades_to_defaults()
     {
         Directory.CreateDirectory(directory);

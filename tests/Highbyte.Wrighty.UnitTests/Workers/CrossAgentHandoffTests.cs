@@ -211,6 +211,68 @@ public sealed class CrossAgentHandoffTests : IDisposable
     }
 
     [Fact]
+    public async Task Automatic_handoff_skips_a_detected_but_disabled_fallback()
+    {
+        var (backend, config, _) = await CreateQueueableItemAsync(new WorkerUsageFailureConfig
+        {
+            Action = "handoff",
+            Fallbacks = new Dictionary<string, IReadOnlyList<string>>(
+                StringComparer.OrdinalIgnoreCase)
+            { ["claude"] = ["codex"] }
+        });
+        var settings = await SettingsAsync("claude");
+        var events = new List<WorkerEvent>();
+
+        await Worker(backend, new UsageFailureRunner(), userSettings: settings).RunAsync(
+            config, Options(), directory, Collect(events), CancellationToken.None);
+
+        Assert.Single(events, value => value.Type == "needs-attention");
+        Assert.DoesNotContain(events, value => value.Type == "handoff-queued");
+    }
+
+    [Fact]
+    public async Task Automatic_queue_scan_leaves_a_disabled_handoff_target_queued()
+    {
+        var (backend, config, id) = await SeedQueuedHandoffAsync();
+        var settings = await SettingsAsync("claude");
+        var runner = new RecordingRunner();
+
+        var summary = await Worker(backend, runner, userSettings: settings).RunAsync(
+            config, Options(agent: null), directory, _ => Task.CompletedTask,
+            CancellationToken.None);
+
+        Assert.Equal(0, summary.Processed);
+        Assert.Null(runner.Invocation);
+        Assert.Equal(
+            DispatchStates.HandoffQueued,
+            (await backend.GetAsync(config, id, CancellationToken.None))?.DispatchState);
+    }
+
+    [Fact]
+    public async Task Worker_requires_an_enabled_agent_unless_agent_is_explicit()
+    {
+        var (backend, config, _) = await CreateQueueableItemAsync(new WorkerUsageFailureConfig());
+        var settings = await SettingsAsync();
+        var worker = Worker(backend, new FailIfRunRunner(), userSettings: settings);
+
+        var exception = await Assert.ThrowsAsync<TrackerException>(() =>
+            worker.PreflightAsync(
+                config,
+                Options(agent: null),
+                directory,
+                _ => Task.CompletedTask,
+                CancellationToken.None));
+
+        Assert.Equal("NO_AGENT_ENABLED", exception.Code);
+        Assert.True(await worker.PreflightAsync(
+            config,
+            Options(agent: "claude"),
+            directory,
+            _ => Task.CompletedTask,
+            CancellationToken.None));
+    }
+
+    [Fact]
     public async Task Due_handoff_launches_the_target_with_the_packet_over_stdin()
     {
         var (backend, config, id) = await SeedQueuedHandoffAsync();
@@ -455,7 +517,8 @@ public sealed class CrossAgentHandoffTests : IDisposable
         LocalMarkdownTrackerBackend backend,
         IAgentProcessRunner runner,
         IAgentFailureSimulator? failureSimulator = null,
-        IProviderCapacityStore? providerCapacity = null) =>
+        IProviderCapacityStore? providerCapacity = null,
+        Highbyte.Wrighty.Settings.UserSettingsStore? userSettings = null) =>
         new(
             new TrackerService(new TrackerBackendRegistry([backend])),
             runner,
@@ -463,7 +526,23 @@ public sealed class CrossAgentHandoffTests : IDisposable
             [new ClaudeAgentAdapter(), new CodexAgentAdapter()],
             clock: () => clock.UtcNow,
             providerCapacityStore: providerCapacity,
-            failureSimulator: failureSimulator);
+            failureSimulator: failureSimulator,
+            userSettings: userSettings);
+
+    private async Task<Highbyte.Wrighty.Settings.UserSettingsStore> SettingsAsync(
+        params string[] enabledAgents)
+    {
+        var store = new Highbyte.Wrighty.Settings.UserSettingsStore(
+            new Highbyte.Wrighty.Settings.UserConfigPaths(
+                Path.Combine(directory, $"settings-{Guid.NewGuid():N}")));
+        await store.SaveAsync(
+            new Highbyte.Wrighty.Settings.UserSettings
+            {
+                EnabledAgents = enabledAgents
+            },
+            CancellationToken.None);
+        return store;
+    }
 
     private async Task<(LocalMarkdownTrackerBackend Backend, TrackerConfig Config, WorkItemId Id)>
         CreateQueueableItemAsync(

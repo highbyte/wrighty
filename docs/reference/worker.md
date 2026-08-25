@@ -1,7 +1,7 @@
 # Autonomous worker mode
 
 `wrighty worker` schedules one explicitly eligible item at a time, claims it with a fenced handle,
-starts Claude Code, Codex, or Copilot headlessly, renews the claim for a fixed budget, and records
+starts Claude Code, Codex, Copilot, or OpenCode headlessly, renews the claim for a fixed budget, and records
 the workspace and vendor session address. Wrighty is the scheduler; the vendor CLI remains the
 agent runtime.
 
@@ -38,6 +38,15 @@ and then returns to compact idle messages. `--filter key=value` adds AND filters
 bounds spend, `--idle-timeout` bounds idle waiting, and `--json` emits one JSON lifecycle event per
 line. `wrighty worker --check` runs a short, read-only vendor probe and verifies a usable session
 handle; the probe still invokes the vendor and may incur usage.
+
+The user-scoped `enabledAgents` allowlist is an additional automatic-selection gate. An agent
+resolved from item policy or `worker.defaultAgent` is skipped while disabled or not detected,
+without falling back to another vendor. The same gate applies to queued resumes, continuations,
+directed handoffs, and automatic recovery targets. A generic worker refuses to start with
+`NO_AGENT_ENABLED` when no detected agent is enabled. Supplying `--agent` explicitly is a one-run
+override of the saved preference, but the named CLI must still be detected: it expresses current
+operator intent without silently enabling that agent for later workers. Manage the allowlist from
+the web console's **Agents** menu; see [User settings](user-settings.md).
 
 ## Requirements-readiness assessment
 
@@ -101,7 +110,7 @@ remain active in either fallback. Existing sessions keep the prompt they started
 
 Wrighty distinguishes three states:
 
-- **Supported** means Wrighty has an adapter for the vendor: Claude, Codex, or Copilot.
+- **Supported** means Wrighty has an adapter for the vendor: Claude, Codex, Copilot, or OpenCode.
 - **Installed** means that vendor's executable is currently discoverable on this machine.
 - **Ready** means the stronger `wrighty worker --check` probe also succeeds.
 
@@ -177,25 +186,29 @@ on the `started`, `resumed`, and `dry-run` events as a `permissions` object.
 
 ### What each vendor actually enforces
 
-Verified on 2026-07-25 with Claude Code 2.1.219, codex-cli 0.145.0, and GitHub Copilot CLI 1.0.75:
+Verified through 2026-08-25 with Claude Code 2.1.219, codex-cli 0.145.0, GitHub Copilot CLI
+1.0.75, and OpenCode 1.18.23:
 
 | Agent | `workspace` maps to | Confines file writes | Network | Enforcement |
 | --- | --- | --- | --- | --- |
 | Codex | `--sandbox workspace-write -c sandbox_workspace_write.network_access=true` | yes | yes | enforced |
 | Copilot | `--allow-all-tools` | yes (workspace plus the system temporary directory), for shell commands as well as file tools | yes | enforced |
 | Claude | `--permission-mode acceptEdits --allowedTools "Bash Edit Write Read Glob Grep NotebookEdit TodoWrite Task"` | **no** | yes | partial |
+| OpenCode | inline permissions allow tools but deny `external_directory` and interactive questions | **no** for shell commands; native file tools are confined | yes | partial |
 
 | Agent | assessment `read-only` maps to | File writes | Commands/network |
 | --- | --- | --- | --- |
 | Codex | `--sandbox read-only` | denied | network disabled by the sandbox |
 | Copilot | deny `write`, `shell`, and `url`; disable built-in MCPs; disallow the temporary directory | denied | denied |
 | Claude | `--permission-mode dontAsk --tools "Read Glob Grep"` | mutating tools unavailable | Bash and network tools unavailable |
+| OpenCode | inline permissions deny all, then allow `read`, `glob`, `grep`, `list`, and `skill` | denied | denied |
 
 | Agent | `full` maps to |
 | --- | --- |
 | Codex | `--sandbox danger-full-access` |
 | Copilot | `--allow-all` (all tools, all paths, all URLs) |
 | Claude | `--dangerously-skip-permissions` |
+| OpenCode | inline permissions allow all except interactive questions, with `--auto` |
 
 **The asymmetry is real and is reported rather than hidden.** Claude Code exposes no verified
 headless mode that confines file writes to the workspace: under `acceptEdits` with a tool
@@ -213,12 +226,15 @@ place. Verified end to end: under `--allow-all-tools` a parent-directory write w
 both Copilot's file tool and the shell ("Permission denied and could not request permission from
 user"), while the identical prompt succeeded once `--allow-all-paths` was added. Copilot applies
 path verification to shell commands as well as file tools. Codex was likewise verified end to end:
-network reachable, workspace write accepted, parent-directory write denied.
+network reachable, workspace write accepted, parent-directory write denied. OpenCode's native file
+tools honor `external_directory: deny`, but its shell runs with host filesystem and network
+authority. Wrighty therefore reports OpenCode's workspace profile as partial and does not claim
+that it confines all file writes.
 
 The read-only liveness probe behind `wrighty worker --check` and the provider capacity probe never
 carry the configured profile. They only prove the vendor answers and honors a session handle, so
-they run with Codex's `read-only` sandbox, Claude's tools disabled entirely, and no Copilot
-tool-approval flag.
+they run with Codex's `read-only` sandbox, Claude's tools disabled entirely, no Copilot
+tool-approval flag, and OpenCode's deny-by-default read-only permissions.
 
 ### When a denial stops the work
 
@@ -645,17 +661,23 @@ wrighty provider probe copilot --yes --json
 The probe's semantics — the lease that stops concurrent probes, the confirmation rules, and how
 each result kind affects the circuit — are in
 [the provider circuit](usage-recovery-and-agent-handoff.md#the-provider-circuit).
+When **Settings → Repository → Advanced/testing → Capacity probe result** is configured for the
+agent, web probes, this CLI command, and worker capacity gates use the repository-scoped simulated
+result instead. The simulated path starts no vendor process and does not update or clear the
+installation-wide real-capacity cache; `available` can therefore override a real open circuit only
+for that repository, while `usage-exhausted` and `rate-limited` keep its automatic work blocked
+until the simulation is removed or changed.
 
 `provider-probe-started`, `provider-available`, and `provider-unavailable` worker events explain the
 result, while candidate diagnostics explain automatic circuit filtering. `wrighty list` shows the compact retry time,
 `wrighty get` shows the sanitized reason, local and UTC timestamps, attempt count, and installation
 ownership, and `wrighty status` groups scheduled retries and open provider circuits. The web
-console shows the same categorical retry badge and detail callout, plus an
-installation-local **Agent capacity** header control immediately before the connection
-indicator. Its summary reports available agents, active probes, and unavailable agents; an anchored popover uses
-one compact row per configured agent for current status, known time, sanitized reason, and probe
-action without consuming board height. Its **Probe all** action checks every configured agent
-concurrently, with one bounded vendor request per configured agent. Otherwise-ready cards assigned to an
+console shows the same categorical retry badge and detail callout, plus the consolidated
+**Agents** header control immediately before the connection indicator. Its summary reports
+available enabled agents, active probes, and states needing attention; an anchored popover uses
+one compact row per detected agent for current status and actions. Its **Probe** action checks every
+enabled detected agent concurrently, with one bounded vendor request per agent unless a
+repository simulation supplies the result. Otherwise-ready cards assigned to an
 unavailable provider say that the provider is unavailable instead of claiming they are immediately
 runnable; their item panel explains that automatic workers will leave them unclaimed and shows the
 explicit item-run override. Provider opening, probe leasing, and closure participate in the board
@@ -694,14 +716,16 @@ fallback count on top before the item moves to `needs-attention`.
 
 To demonstrate these paths against an installed Wrighty without changing an agent or provider,
 open **Web console → Settings → Repository → Advanced/testing**. Per-agent availability can be
-changed to **Pretend not installed**, while a selected implementation result enters the normal item
+changed to **Pretend not installed**; a capacity-probe result exercises the same repository-local
+web, CLI, and worker capacity decision; and an implementation result enters the normal item
 recovery policy, including dispatch persistence, GitHub presentation, retry timing, and cross-agent
-handoff. Synthetic usage failures do not open the installation-wide provider-capacity circuit.
+handoff. Neither kind of synthetic usage failure opens the installation-wide provider-capacity
+circuit.
 Turn the source agent's simulation off before a same-agent retry that should succeed; leave the
-target agent off for a handoff demonstration. Synthetic implementation results leave
-requirements-readiness turns and diagnostic checks real; availability simulation deliberately
-affects installation-dependent checks. Repository simulations stay enabled until explicitly
-turned off.
+target agent off for a handoff demonstration. Synthetic implementation results leave capacity
+probes, requirements-readiness turns, and diagnostic checks real; capacity-probe simulation is a
+separate setting, and availability simulation deliberately affects installation-dependent checks.
+Repository simulations stay enabled until explicitly turned off.
 
 The Local Markdown web editor exposes these managed values as **Allow automatic execution**
 and **Agent policy**. If no item can be claimed, the worker reports how many active items it
@@ -1266,17 +1290,18 @@ is enabled), turning the common "which machine?" confusion into an explicit choi
 
 ### Session control
 
-Verified on 2026-07-25 with Claude Code 2.1.219, codex-cli 0.145.0, and GitHub Copilot CLI 1.0.75:
+Verified through 2026-08-25 with Claude Code 2.1.219, codex-cli 0.145.0, GitHub Copilot CLI
+1.0.75, and OpenCode 1.18.23:
 
-| Capability | Claude | Codex | Copilot |
-| --- | --- | --- | --- |
-| Headless start | `-p` | `exec` | `-p` |
-| Machine output | JSON | JSONL (`--json`) | JSONL |
-| Session handle | preassigned UUID | parsed from `thread.started` | preassigned name |
-| Headless resume | `-p --resume` | `exec resume` | `-p --resume=` |
-| Working directory | process cwd | `-C` | `-C` |
-| Autonomy | permission mode plus tool allow-list | sandbox mode | tool-approval flag |
-| Workspace confinement | not available headlessly | `workspace-write` | default path verification |
+| Capability | Claude | Codex | Copilot | OpenCode |
+| --- | --- | --- | --- | --- |
+| Headless start | `-p` | `exec` | `-p` | `run --format json --auto` |
+| Machine output | JSON | JSONL (`--json`) | JSONL | JSONL (`--format json`) |
+| Session handle | preassigned UUID | parsed from `thread.started` | preassigned name | parsed from `sessionID` |
+| Headless resume | `-p --resume` | `exec resume` | `-p --resume=` | `run --session` |
+| Working directory | process cwd | `-C` | `-C` | `--dir` |
+| Autonomy | permission mode plus tool allow-list | sandbox mode | tool-approval flag | `--auto` plus inline permission rules |
+| Workspace confinement | not available headlessly | `workspace-write` | default path verification | native tools only; shell is unconfined |
 
 Per-profile flags are in [Spawned-agent permissions](#spawned-agent-permissions).
 
@@ -1285,16 +1310,17 @@ Per-profile flags are in [Spawned-agent permissions](#spawned-agent-permissions)
 Handoff context comes from each vendor's own local session surface. Verified on 2026-08-06 with
 codex→claude and claude→codex handoffs on Local Markdown and copilot→codex through automatic
 fallback selection; store layouts re-confirmed 2026-08-08 against Claude Code 2.1.222, codex-cli
-0.145.0, and GitHub Copilot CLI 1.0.78.
+0.145.0, and GitHub Copilot CLI 1.0.78. OpenCode export was verified on 2026-08-25 with OpenCode
+1.18.23.
 
-| Capability | Claude | Codex | Copilot |
-| --- | --- | --- | --- |
-| Export surface | local transcript store | local rollout store | `--share` Markdown export |
-| Location | `~/.claude/projects/**/<sessionId>.jsonl` | `~/.codex/sessions/**/rollout-*-<sessionId>.jsonl` | `copilot-shares-v1/` in Wrighty's cache root |
-| Written by | the vendor, for every session | the vendor, for every session | only when Wrighty requests it at launch |
-| Available as handoff **source** | yes | yes | worker-owned sessions only |
-| Available as handoff **target** | yes | yes | yes |
-| Retrospective export | yes | yes | **no** |
+| Capability | Claude | Codex | Copilot | OpenCode |
+| --- | --- | --- | --- | --- |
+| Export surface | local transcript store | local rollout store | `--share` Markdown export | `opencode export <sessionId>` JSON |
+| Location | `~/.claude/projects/**/<sessionId>.jsonl` | `~/.codex/sessions/**/rollout-*-<sessionId>.jsonl` | `copilot-shares-v1/` in Wrighty's cache root | OpenCode's local data store, accessed through its CLI |
+| Written by | the vendor, for every session | the vendor, for every session | only when Wrighty requests it at launch | the vendor, for retained sessions |
+| Available as handoff **source** | yes | yes | worker-owned sessions only | yes |
+| Available as handoff **target** | yes | yes | yes | yes |
+| Retrospective export | yes | yes | **no** | yes |
 
 The asymmetry in the last three rows is the operationally important part. Claude and codex both
 write their session to disk unconditionally, so any recorded session on this host can be exported
@@ -1307,6 +1333,10 @@ Two vendor quirks are handled in the exporters rather than left to the reader: c
 Wrighty's launch scaffolding as ordinary user messages (filtered out so the packet carries real
 conversation), and copilot names its export by its own session UUID rather than the handle Wrighty
 requested (resolved by matching the export's metadata note).
+
+OpenCode's `--sanitize` export removes conversation text that Wrighty needs for a useful handoff.
+Wrighty instead reads the bounded raw local export, selects only user/assistant text parts, and
+then applies the same handoff packet redaction and size limits used for every vendor.
 
 ### Degradation
 

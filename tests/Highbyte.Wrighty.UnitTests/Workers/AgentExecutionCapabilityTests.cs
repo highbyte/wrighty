@@ -5,7 +5,8 @@ namespace Highbyte.Wrighty.UnitTests.Workers;
 
 /// <summary>
 /// Pins the vendor capability surface this feature is built on, as observed on 2026-08-08 against
-/// Claude Code 2.1.222, codex-cli 0.145.0, and GitHub Copilot CLI 1.0.78. These are assertions
+/// Claude Code 2.1.222, codex-cli 0.145.0, GitHub Copilot CLI 1.0.78, and OpenCode 1.18.23.
+/// These are assertions
 /// about vendors, not about Wrighty's logic: when one of them fails after a vendor upgrade, the
 /// correct response is to re-observe the CLI and update the adapter, not to relax the test.
 /// </summary>
@@ -20,6 +21,7 @@ public sealed class AgentExecutionCapabilityTests
         Assert.True(Capability(new ClaudeAgentAdapter()).SupportsModel);
         Assert.True(Capability(new CodexAgentAdapter()).SupportsModel);
         Assert.True(Capability(new CopilotAgentAdapter()).SupportsModel);
+        Assert.True(Capability(new OpenCodeAgentAdapter()).SupportsModel);
     }
 
     [Fact]
@@ -65,7 +67,10 @@ public sealed class AgentExecutionCapabilityTests
         // The built-in economy/balanced/deep tiers map to these, so all three must work everywhere
         // — including on codex's older models, which stop at xhigh.
         foreach (var adapter in new IAgentAdapter[]
-                 { new ClaudeAgentAdapter(), new CodexAgentAdapter(), new CopilotAgentAdapter() })
+                 {
+                     new ClaudeAgentAdapter(), new CodexAgentAdapter(),
+                     new CopilotAgentAdapter(), new OpenCodeAgentAdapter()
+                 })
         {
             var capability = Capability(adapter);
             foreach (var effort in new[]
@@ -116,13 +121,21 @@ public sealed class AgentExecutionCapabilityTests
     {
         // Uses `echo` rather than a vendor, so the test does not depend on which agents happen to
         // be installed on the machine running it.
-        var probe = new AgentVersionProbe(new PathExecutableResolver());
-        var version = await probe.TryGetVersionAsync("echo", CancellationToken.None);
+        var registry = new AgentRegistry([
+            new AgentIntegration(new AgentDescriptor(
+                "test-agent",
+                "Test Agent",
+                "Test Vendor",
+                "echo",
+                AgentCapabilities.None))
+        ]);
+        var probe = new AgentVersionProbe(new PathExecutableResolver(), registry: registry);
+        var version = await probe.TryGetVersionAsync("test-agent", CancellationToken.None);
 
         // `echo --version` prints "--version" on macOS/BSD and a GNU banner on Linux; either way a
         // zero exit means the first non-empty line is what gets recorded.
         Assert.False(string.IsNullOrWhiteSpace(version));
-        Assert.Equal(version, await probe.TryGetVersionAsync("echo", CancellationToken.None));
+        Assert.Equal(version, await probe.TryGetVersionAsync("test-agent", CancellationToken.None));
     }
 
     [Fact]

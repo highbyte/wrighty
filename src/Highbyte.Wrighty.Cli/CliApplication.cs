@@ -49,7 +49,9 @@ public sealed partial class CliApplication(
     IWorkerInstanceRegistry? workerInstanceRegistry = null,
     IContextApprovalService? contextApprovalService = null,
     Workers.AgentModelDiscoveries? modelDiscoveries = null,
-    StorageLocationCatalog? storageLocationCatalog = null)
+    StorageLocationCatalog? storageLocationCatalog = null,
+    AgentRegistry? agentRegistry = null,
+    IWebSkillMaintenance? skillMaintenance = null)
 {
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
@@ -75,15 +77,126 @@ public sealed partial class CliApplication(
     private readonly StorageLocationCatalog storageLocations =
         storageLocationCatalog ?? new StorageLocationCatalog(new CachePaths(
             Environment.GetEnvironmentVariable("WRIGHTY_CACHE_DIR")));
+    private readonly AgentRegistry agents = agentRegistry ?? BuiltInAgentRegistry.Create(
+        new Highbyte.Wrighty.Processes.PathExecutableResolver(),
+        copilotSharesRoot: new CachePaths(
+            Environment.GetEnvironmentVariable("WRIGHTY_CACHE_DIR")).CopilotSharesRoot);
 
-    public Task<int> InvokeAsync(string[] args, CancellationToken cancellationToken = default)
+    private readonly IWebSkillMaintenance? installedSkills = skillMaintenance;
+    private IReadOnlyList<WebSkillInstallation>? skillHealthSnapshot;
+
+    public async Task<int> InvokeAsync(string[] args, CancellationToken cancellationToken = default)
     {
         // The token is the process's shutdown signal. Everything cancellation-driven below —
         // worker loop unwinding, claim release, worker-instance record removal — hangs off the
         // tokens System.CommandLine derives from this one, so a caller that never cancels it
         // (tests, or a host with its own lifetime) simply gets no shutdown path, which is also
         // the observed failure when nothing translated SIGINT into it.
-        return BuildRootCommand().Parse(args).InvokeAsync(cancellationToken: cancellationToken);
+        skillHealthSnapshot = null;
+        var parseResult = BuildRootCommand().Parse(args);
+        if (parseResult.Errors.Count == 0 &&
+            !args.Any(argument => argument is "--help" or "-h" or "-?" or "--version") &&
+            args.FirstOrDefault() is { } command &&
+            IsAgentFacingEntryPoint(command))
+        {
+            await WriteSkillHealthWarningsAsync(cancellationToken);
+        }
+        return await parseResult.InvokeAsync(cancellationToken: cancellationToken);
+    }
+
+    internal static bool IsAgentFacingEntryPoint(string command) => command.ToLowerInvariant() is
+        "init" or "pick" or "claim" or "resume" or "worker" or "web";
+
+    private async Task WriteSkillHealthWarningsAsync(CancellationToken cancellationToken)
+    {
+        var installations = await InspectSkillsAsync(cancellationToken);
+        if (installations is null)
+        {
+            return;
+        }
+        var enabledAgents = await EnabledAgentFilterAsync(cancellationToken);
+        if (enabledAgents is not null)
+        {
+            installations = installations
+                .Where(installation => installation.AgentSelection
+                    .Split(',')
+                    .Any(enabledAgents.Contains))
+                .ToArray();
+        }
+
+        var styler = new WorkerTerminalStyler(terminals, WorkerColorMode.Auto);
+        foreach (var group in installations
+                     .GroupBy(installation => installation.AgentSelection, StringComparer.OrdinalIgnoreCase)
+                     .Where(group => group.Count(installation =>
+                         installation.State != WebSkillInstallationState.Missing) > 1))
+        {
+            var sample = group.First();
+            await error.WriteLineAsync(
+                $"{styler.WarningPrefix()} Both project and user Wrighty skills are installed for " +
+                $"{sample.AgentLabel}. Agent hosts resolve duplicate skill names differently. " +
+                $"Remove one with 'wrighty skill uninstall --agent {sample.AgentSelection} " +
+                $"--scope project' or 'wrighty skill uninstall --agent {sample.AgentSelection} " +
+                "--scope user'.");
+        }
+        foreach (var installation in installations.Where(candidate => candidate.State is
+                     WebSkillInstallationState.Outdated or
+                     WebSkillInstallationState.Modified or
+                     WebSkillInstallationState.Malformed))
+        {
+            var command = installation.State == WebSkillInstallationState.Outdated
+                ? $"wrighty skill update --agent {installation.AgentSelection} --scope {installation.Scope}"
+                : $"wrighty skill check --agent {installation.AgentSelection} --scope {installation.Scope}";
+            var versions = installation.State == WebSkillInstallationState.Outdated
+                ? $" (installed {installation.InstalledVersion ?? "unknown"}; bundled {installation.BundledVersion})"
+                : string.Empty;
+            await error.WriteLineAsync(
+                $"{styler.WarningPrefix()} The {installation.Scope} Wrighty skill for {installation.AgentLabel} at " +
+                $"'{installation.Path}' is {installation.State.ToString().ToLowerInvariant()}{versions}. " +
+                $"Run '{command}'.");
+        }
+    }
+
+    private async Task<HashSet<string>?> EnabledAgentFilterAsync(
+        CancellationToken cancellationToken)
+    {
+        if (userSettings is null)
+        {
+            return null;
+        }
+
+        var settings = await userSettings.LoadAsync(cancellationToken);
+        if (runtimes is null)
+        {
+            return settings.EnabledAgents?.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return runtimes.Snapshot().Agents
+            .Where(runtime => settings.IsAgentEnabled(runtime.Agent, runtime.Installed))
+            .Select(runtime => runtime.Agent)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task<IReadOnlyList<WebSkillInstallation>?> InspectSkillsAsync(
+        CancellationToken cancellationToken)
+    {
+        if (skillHealthSnapshot is not null || installedSkills is null)
+        {
+            return skillHealthSnapshot;
+        }
+
+        try
+        {
+            skillHealthSnapshot = await installedSkills.InspectAsync(
+                workingDirectory,
+                cancellationToken);
+            return skillHealthSnapshot;
+        }
+        catch (TrackerException)
+        {
+            // A best-effort health report must never prevent the requested tracker operation.
+            // Explicit `wrighty skill check` remains the diagnostic surface for inspection errors.
+            return null;
+        }
     }
 
     private RootCommand BuildRootCommand()
@@ -603,11 +716,15 @@ public sealed partial class CliApplication(
             var local = localLauncher.GetCapabilities(runtime.Agent);
             var experimentalEnabled =
                 worker?.AllowsExperimentalDesktopSession(runtime.Agent) == true;
-            var desktopSupport = runtime.Agent switch
+            var registeredDesktopSupport = agents.Find(runtime.Agent)
+                ?.Descriptor.LocalLaunch?.DesktopSessionSupport ??
+                DesktopSessionSupport.Unavailable;
+            var desktopSupport = registeredDesktopSupport switch
             {
-                "codex" or "copilot" => "supported",
-                "claude" when experimentalEnabled => "experimental-enabled",
-                "claude" => "experimental-disabled",
+                DesktopSessionSupport.Supported => "supported",
+                DesktopSessionSupport.Experimental when experimentalEnabled =>
+                    "experimental-enabled",
+                DesktopSessionSupport.Experimental => "experimental-disabled",
                 _ => "unavailable"
             };
             var canOpenDesktop =
@@ -617,8 +734,11 @@ public sealed partial class CliApplication(
             if (canOpenDesktop)
                 desktopUnavailableReason = null;
             else if (desktopSupport == "experimental-disabled")
+            {
+                var displayName = agents.Find(runtime.Agent)?.Descriptor.DisplayName ?? runtime.Agent;
                 desktopUnavailableReason =
-                    "Opening recorded Claude sessions in Desktop is experimental and is not enabled.";
+                    $"Opening recorded {displayName} sessions in Desktop is experimental and is not enabled.";
+            }
             return new AgentLaunchCapabilityView(
                 runtime.Agent,
                 runtime.Installed && local.CanLaunchCli,
@@ -783,6 +903,10 @@ public sealed partial class CliApplication(
         await output.WriteLineAsync(
             $"  hostLabel: {effectiveHost}" +
             (string.IsNullOrWhiteSpace(settings.HostLabel) ? " (default)" : string.Empty));
+        var enabledAgents = EffectiveEnabledAgents(settings);
+        await output.WriteLineAsync(
+            $"  enabledAgents: {(enabledAgents.Length == 0 ? "none" : string.Join(", ", enabledAgents))}" +
+            (settings.EnabledAgents is null ? " (detected agents; default)" : string.Empty));
         if (settings.WorkerProfiles.Count == 0)
         {
             await output.WriteLineAsync("  workerProfiles: built-in tiers (default)");
@@ -864,7 +988,7 @@ public sealed partial class CliApplication(
                 "  Warning: a typed save will normalize comments or trailing commas and requires --yes.");
     }
 
-    private static object UserConfigurationDto(
+    private object UserConfigurationDto(
         Settings.UserSettingsStore store,
         Settings.UserSettings settings)
     {
@@ -883,6 +1007,14 @@ public sealed partial class CliApplication(
                         ? "wrighty-default"
                         : "user"
                 },
+                enabledAgents = new
+                {
+                    storedValue = settings.EnabledAgents,
+                    effectiveValue = EffectiveEnabledAgents(settings),
+                    source = settings.EnabledAgents is null
+                        ? "detected-agents"
+                        : "user"
+                },
                 workerProfiles = new
                 {
                     storedValue = settings.WorkerProfiles.Count == 0
@@ -896,6 +1028,14 @@ public sealed partial class CliApplication(
             }
         };
     }
+
+    private string[] EffectiveEnabledAgents(Settings.UserSettings settings) =>
+        (runtimes?.Snapshot().InstalledAgents
+            .Select(runtime => runtime.Agent)
+            .Where(agent => settings.IsAgentEnabled(agent, detected: true)) ?? [])
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Order(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
 
     private static string EffectiveHost(Settings.UserSettings settings) =>
         string.IsNullOrWhiteSpace(settings.HostLabel)
@@ -997,7 +1137,7 @@ public sealed partial class CliApplication(
             throw new TrackerException("RESUME_WORKTREE_ABSENT",
                 $"The recorded worktree for '{tracker.FormatShort(config, id)}' is no longer present at " +
                 $"{session.WorkspacePath}; it was removed or is on another host, so the session cannot be resumed here.", 5);
-        var adapter = ResumeAdapterFor(session.Agent);
+        var adapter = InteractiveAdapterFor(session.Agent);
         var handle = new SessionHandle(session.SessionId);
         var workspace = new Workspace(session.WorkspacePath);
         var environment = TrackerEnvironment(config);
@@ -1030,18 +1170,22 @@ public sealed partial class CliApplication(
             await output.WriteLineAsync(resume);
     }
 
-    private static IAgentAdapter ResumeAdapterFor(string agentType) => agentType switch
+    private IAgentInteractiveAdapter InteractiveAdapterFor(string agentType)
     {
-        "claude" => new ClaudeAgentAdapter(),
-        "codex" => new CodexAgentAdapter(),
-        "copilot" => new CopilotAgentAdapter(),
-        _ => throw new TrackerException("AGENT_UNSUPPORTED",
-            $"Unsupported recorded agent '{agentType}'.", 3)
-    };
+        var integration = agents.Find(agentType) ??
+            throw new TrackerException("AGENT_UNSUPPORTED",
+                $"Unsupported recorded agent '{agentType}'.", 3);
+        return integration.InteractiveAdapter ??
+            throw new TrackerException("AGENT_INTERACTIVE_UNSUPPORTED",
+                $"Agent '{integration.Descriptor.Id}' does not support interactive CLI resume.", 3);
+    }
 
     private Command BuildWorkerCommand()
     {
-        var agent = new Option<string?>("--agent") { Description = "Vendor to run: claude, codex, or copilot." };
+        var agent = new Option<string?>("--agent")
+        {
+            Description = $"Vendor to run: {agents.DescribeWorkerIds()}."
+        };
         var once = new Option<bool>("--once") { Description = "Process at most one item and exit." };
         var maxItems = new Option<int?>("--max-items") { Description = "Stop after processing this many items." };
         var workspaceMode = new Option<string?>("--workspace-mode")
@@ -1154,7 +1298,7 @@ public sealed partial class CliApplication(
     {
         var agent = new Argument<string>("agent")
         {
-            Description = "Provider agent to probe: claude, codex, or copilot."
+            Description = $"Provider agent to probe: {agents.DescribeWorkerIds()}."
         };
         var yes = new Option<bool>("--yes")
         {
@@ -1207,8 +1351,9 @@ public sealed partial class CliApplication(
                 "Provider capacity probing requires --yes in JSON or non-interactive mode.",
                 2);
         await error.WriteLineAsync(
-            $"warning: probing {agent} starts a small vendor request and may consume subscription usage; " +
-            "it does not claim or modify a work item.");
+            $"warning: a real probe of {agent} starts a small vendor request and may consume " +
+            "subscription usage; a configured repository simulation does not start the vendor " +
+            "CLI. Neither path claims or modifies a work item.");
         if (yes)
             return;
         await output.WriteAsync($"Probe {agent} capacity now? [y/N] ");
@@ -1803,7 +1948,8 @@ public sealed partial class CliApplication(
         };
         var defaultAgent = new Option<string?>("--default-agent")
         {
-            Description = "Default worker agent: claude, codex, copilot, auto, or none."
+            Description = "Default worker agent: " +
+                $"{string.Join(", ", agents.WorkerIds)}, auto, or none."
         };
         var configPath = new Option<string?>("--config")
         {
@@ -2069,7 +2215,10 @@ public sealed partial class CliApplication(
                 result,
                 request.CheckOnly,
                 json,
-                runtimes?.Snapshot());
+                runtimes?.Snapshot(),
+                request.CheckOnly
+                    ? await InspectSkillsAsync(cancellationToken)
+                    : null);
             return 0;
         }
         catch (TrackerException exception)
@@ -2117,7 +2266,7 @@ public sealed partial class CliApplication(
             cancellationToken);
     }
 
-    /// <summary>Agent display names as prose: "Claude and Codex", "Claude, Codex and Copilot".</summary>
+    /// <summary>Agent display names as prose, for example "Claude and Codex".</summary>
     private static string JoinAgentNames(IReadOnlyList<AgentRuntime> agents)
     {
         var names = agents.Select(runtime => AgentDisplayName(runtime.Agent)).ToArray();
@@ -2268,10 +2417,11 @@ public sealed partial class CliApplication(
         var value = request.DefaultAgent?.Trim().ToLowerInvariant();
         if (value == "none")
             return request with { DefaultAgent = null };
-        if (value is not ("claude" or "codex" or "copilot" or "auto"))
+        if (value != "auto" && !agents.IsWorkerAgent(value))
             throw new TrackerException(
                 "ARGUMENT_INVALID",
-                "--default-agent must be claude, codex, copilot, auto, or none.",
+                "--default-agent must be " +
+                $"{string.Join(", ", agents.WorkerIds)}, auto, or none.",
                 2);
         if (runtimes is null)
         {
@@ -2302,7 +2452,7 @@ public sealed partial class CliApplication(
             return request with { DefaultAgent = snapshot.InstalledAgents[0].Agent };
         }
 
-        var selected = snapshot.Find(value);
+        var selected = snapshot.Find(value!);
         if (selected is null)
             throw new TrackerException(
                 "AGENT_UNSUPPORTED",
@@ -2504,7 +2654,8 @@ public sealed partial class CliApplication(
     {
         await output.WriteLineAsync("Common overrides:");
         await output.WriteLineAsync(
-            "  --default-agent AGENT    Set claude, codex, copilot, auto, or none");
+            "  --default-agent AGENT    Set " +
+            $"{string.Join(", ", agents.WorkerIds)}, auto, or none");
         if (string.Equals(plan.Backend, "github", StringComparison.OrdinalIgnoreCase))
         {
             if (plan.CreateConfiguration)
@@ -2813,23 +2964,9 @@ public sealed partial class CliApplication(
             config,
             new ListWorkItemsRequest(null, null, ArchiveScope.Active),
             cancellationToken);
-        // Bounded, machine-local git probes only for items with a retained worktree in the
-        // needs-attention/completed/paused groups — the same posture as `wrighty workspaces`.
-        var workspaceStatuses = new Dictionary<string, WorkspaceStatusResult>(StringComparer.Ordinal);
-        if (workspaceInventory is { } inventory)
-        {
-            foreach (var value in items)
-            {
-                if (value.Session is not { HasRecordedWorktree: true } session)
-                    continue;
-                if (value.OperationalStatus is not (OperationalStatuses.NeedsAttention
-                    or OperationalStatuses.Completed
-                    or OperationalStatuses.PausedSession))
-                    continue;
-                workspaceStatuses[value.Item.Id.Value] = await inventory.GetStatusAsync(
-                    workingDirectory, session.WorkspacePath!, session.Branch, cancellationToken);
-            }
-        }
+        var workspaceStatuses = await StatusWorkspaceStatusesAsync(items, cancellationToken);
+        var effectiveProviderCapacity = await EffectiveProviderCapacityAsync(config, cancellationToken);
+        var configurationRevision = await StatusConfigurationRevisionAsync(config, cancellationToken);
 
         await writer.WriteStatusAsync(
             items,
@@ -2838,19 +2975,69 @@ public sealed partial class CliApplication(
             json,
             id => tracker.FormatShort(config, id),
             new StatusOutputContext(
-                (await providerCapacity.ListAsync(cancellationToken))
+                effectiveProviderCapacity
                     .Where(value => value.State != ProviderCapacityState.Available)
                     .ToArray(),
                 config.SourcePath is null
                     ? []
                     : await workerInstances.ListAsync(config.SourcePath, cancellationToken),
-                config.SourceRevision ??
-                (config.SourcePath is { } configurationPath && File.Exists(configurationPath)
-                    ? await RepositoryConfigurationService.RevisionAsync(
-                        configurationPath,
-                        cancellationToken)
-                    : null),
+                configurationRevision,
                 PendingInterruptions(config)));
+    }
+
+    private async Task<IReadOnlyDictionary<string, WorkspaceStatusResult>> StatusWorkspaceStatusesAsync(
+        IReadOnlyList<WorkItemOperationalState> items,
+        CancellationToken cancellationToken)
+    {
+        // Bounded, machine-local git probes only for items with a retained worktree in the
+        // needs-attention/completed/paused groups — the same posture as `wrighty workspaces`.
+        var statuses = new Dictionary<string, WorkspaceStatusResult>(StringComparer.Ordinal);
+        if (workspaceInventory is not { } inventory)
+            return statuses;
+
+        foreach (var value in items)
+        {
+            if (value.Session is not { HasRecordedWorktree: true } session)
+                continue;
+            if (value.OperationalStatus is not (OperationalStatuses.NeedsAttention
+                or OperationalStatuses.Completed
+                or OperationalStatuses.PausedSession))
+                continue;
+            statuses[value.Item.Id.Value] = await inventory.GetStatusAsync(
+                workingDirectory, session.WorkspacePath!, session.Branch, cancellationToken);
+        }
+        return statuses;
+    }
+
+    private async Task<IReadOnlyList<ProviderCapacity>> EffectiveProviderCapacityAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken)
+    {
+        var effective = (await providerCapacity.ListAsync(cancellationToken))
+            .ToDictionary(value => value.Agent, StringComparer.OrdinalIgnoreCase);
+        if (workerService is null)
+            return effective.Values.ToArray();
+
+        foreach (var agent in workerService.SupportedAgents)
+        {
+            if (await workerService.GetSimulatedCapacityAsync(
+                    config, agent, cancellationToken) is { } simulated)
+                effective[agent] = simulated;
+        }
+        return effective.Values.ToArray();
+    }
+
+    private static async Task<string?> StatusConfigurationRevisionAsync(
+        TrackerConfig config,
+        CancellationToken cancellationToken)
+    {
+        if (config.SourceRevision is not null)
+            return config.SourceRevision;
+        if (config.SourcePath is not { } configurationPath || !File.Exists(configurationPath))
+            return null;
+        return await RepositoryConfigurationService.RevisionAsync(
+            configurationPath,
+            cancellationToken);
     }
 
     private IReadOnlyList<PendingWorkerInterruption> PendingInterruptions(TrackerConfig config)
@@ -2889,7 +3076,10 @@ public sealed partial class CliApplication(
             Description = "UUID identifying this logical creation attempt across retries."
         };
         var auto = new Option<bool>("--auto") { Description = "Opt this item into autonomous worker processing." };
-        var workerAgent = new Option<string?>("--agent") { Description = "Preferred worker vendor: claude, codex, or copilot." };
+        var workerAgent = new Option<string?>("--agent")
+        {
+            Description = $"Preferred worker vendor: {agents.DescribeWorkerIds()}."
+        };
         var createProfile = ExecutionProfileOption();
         var fields = FieldOption("Set a Local Markdown custom field as name=value; repeat for multiple fields.");
         var json = JsonOption();
@@ -3297,11 +3487,11 @@ public sealed partial class CliApplication(
                 }
                 var agentPolicy = parseResult.GetValue(agent);
                 if (agentPolicy is not null &&
-                    agentPolicy.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+                    !agents.IsWorkerAgent(agentPolicy))
                 {
                     throw new TrackerException(
                         "ARGUMENT_INVALID",
-                        "--agent must be claude, codex, or copilot.",
+                        $"--agent must be {string.Join(", ", agents.WorkerIds)}.",
                         2);
                 }
 
@@ -4009,13 +4199,13 @@ public sealed partial class CliApplication(
         await output.WriteLineAsync(BuildClaimWorkerResumeCommand(config, id, claim, workspace));
     }
 
-    private static string BuildClaimResumeCommand(
+    private string BuildClaimResumeCommand(
         TrackerConfig config, ClaimResult claim, string workspace)
     {
         var environment = TrackerEnvironment(config);
         environment["WRIGHTY_CLAIMANT_ID"] = claim.ClaimantId!;
         environment["WRIGHTY_CLAIM_TOKEN"] = claim.ClaimToken!;
-        return ResumeAdapterFor(claim.Agent!).BuildInteractiveCommand(
+        return InteractiveAdapterFor(claim.Agent!).BuildInteractiveCommand(
             new SessionHandle(claim.SessionId!),
             new Workspace(workspace),
             environment);
@@ -4277,10 +4467,11 @@ public sealed partial class CliApplication(
 
     private Command BuildSkillCommand()
     {
-        var parent = new Command("skill", "Install and validate agent skills for the Wrighty CLI");
+        var parent = new Command("skill", "Install, validate, update, or remove agent skills for the Wrighty CLI");
         parent.Subcommands.Add(BuildSkillOperationCommand("install"));
         parent.Subcommands.Add(BuildSkillOperationCommand("check"));
         parent.Subcommands.Add(BuildSkillOperationCommand("update"));
+        parent.Subcommands.Add(BuildSkillOperationCommand("uninstall"));
         return parent;
     }
 
@@ -4288,21 +4479,27 @@ public sealed partial class CliApplication(
     {
         var agent = new Option<string>("--agent")
         {
-            Description = "Agent host: auto, codex, claude, copilot, or all.",
+            Description = "Agent host: auto, " +
+                $"{string.Join(", ", agents.WorkerIds)}, or all.",
             DefaultValueFactory = _ => "auto"
         };
         var scope = new Option<string>("--scope")
         {
-            Description = "Installation scope: project or user.",
-            DefaultValueFactory = _ => "project"
+            Description = "Installation scope: project or user."
         };
+        if (operation != "uninstall") scope.DefaultValueFactory = _ => "user";
         var projectDirectory = new Option<string?>("--project-dir")
         {
             Description = "Project installation root; defaults to the Git root or current directory."
         };
         var force = new Option<bool>("--force")
         {
-            Description = "Replace locally modified files in a recognized installation."
+            Description = operation switch
+            {
+                "install" => "Allow an additional installation when the other scope already contains this skill.",
+                "uninstall" => "Remove a recognized installation even when its tool-owned files were modified.",
+                _ => "Replace locally modified files in a recognized installation."
+            }
         };
         var checkTracker = new Option<bool>("--check-tracker")
         {
@@ -4313,7 +4510,7 @@ public sealed partial class CliApplication(
         command.Options.Add(agent);
         command.Options.Add(scope);
         command.Options.Add(projectDirectory);
-        if (operation is "install" or "update") command.Options.Add(force);
+        if (operation is "install" or "update" or "uninstall") command.Options.Add(force);
         if (operation == "check") command.Options.Add(checkTracker);
         command.Options.Add(json);
         var options = new SkillOptionSet(
@@ -4338,6 +4535,13 @@ public sealed partial class CliApplication(
         try
         {
             var agent = ResolveSkillAgent(parseResult.GetValue(options.Agent)!);
+            if (operation == "uninstall" && !WasSpecified(parseResult, options.Scope))
+            {
+                throw new TrackerException(
+                    "ARGUMENT_INVALID",
+                    "skill uninstall requires an explicit --scope project or --scope user.",
+                    2);
+            }
             var scope = ParseSkillScope(parseResult.GetValue(options.Scope)!);
             var projectPath = parseResult.GetValue(options.ProjectDirectory);
             var results = await RunSkillOperationAsync(
@@ -4385,7 +4589,7 @@ public sealed partial class CliApplication(
                     "SKILL_AGENT_NOT_INSTALLED",
                     "No supported local agent CLI was found on PATH. Supported executables: " +
                     $"{string.Join(", ", snapshot.Agents.Select(runtime => runtime.ExecutableName))}. " +
-                    "Use --agent claude, codex, copilot, or all to choose targets explicitly.",
+                    $"Use --agent {string.Join(", ", agents.WorkerIds)}, or all to choose targets explicitly.",
                     2,
                     new Dictionary<string, object?>
                     {
@@ -4397,8 +4601,10 @@ public sealed partial class CliApplication(
         }
 
         var detected = agentContextProvider.Resolve(new AgentContextInput());
-        return detected.Warning is null && detected.Agent is "codex" or "claude" or "copilot"
-            ? detected.Agent
+        return detected.Warning is null &&
+               agents.Find(detected.Agent)?.Descriptor.Capabilities.HasFlag(
+                   AgentCapabilities.SkillInstallation) == true
+            ? detected.Agent!
             : "auto";
     }
 
@@ -4424,8 +4630,11 @@ public sealed partial class CliApplication(
                 agent, scope, workingDirectory, projectPath, force, cancellationToken),
             "check" => skillManager.CheckAsync(
                 agent, scope, workingDirectory, projectPath, cancellationToken),
-            _ => skillManager.UpdateAsync(
-                agent, scope, workingDirectory, projectPath, force, cancellationToken)
+            "update" => skillManager.UpdateAsync(
+                agent, scope, workingDirectory, projectPath, force, cancellationToken),
+            "uninstall" => skillManager.UninstallAsync(
+                agent, scope, workingDirectory, projectPath, force, cancellationToken),
+            _ => throw new InvalidOperationException($"Unknown skill operation '{operation}'.")
         };
 
     private async Task ValidateTrackerForSkillCheckAsync(
@@ -4707,7 +4916,7 @@ public sealed partial class CliApplication(
         return context;
     }
 
-    private static AgentOptionSet AgentOptions() => new(
+    private AgentOptionSet AgentOptions() => new(
         new Option<string?>("--claimant-kind")
         {
             Description = "Claimant kind to publish: agent, human, automation, or unknown."
@@ -4722,7 +4931,8 @@ public sealed partial class CliApplication(
         },
         new Option<string?>("--agent-type")
         {
-            Description = "Agent runtime family to publish: codex, claude, copilot, or other."
+            Description = "Agent runtime family to publish: " +
+                $"{string.Join(", ", agents.Ids)}, or other."
         },
         new Option<string?>("--session-id")
         {
@@ -4743,7 +4953,7 @@ public sealed partial class CliApplication(
         command.Options.Add(options.Disabled);
     }
 
-    private static EditOptionSet EditOptions(
+    private EditOptionSet EditOptions(
         Argument<string> id,
         Option<bool> json) => new(
         id,
@@ -4758,7 +4968,10 @@ public sealed partial class CliApplication(
         new Option<bool>("--clear-priority") { Description = "Clear the work-item priority." },
         new Option<bool>("--auto") { Description = "Opt this item into autonomous worker processing." },
         new Option<bool>("--no-auto") { Description = "Change this item to manual-only execution." },
-        new Option<string?>("--agent") { Description = "Preferred worker vendor: claude, codex, or copilot." },
+        new Option<string?>("--agent")
+        {
+            Description = $"Preferred worker vendor: {agents.DescribeWorkerIds()}."
+        },
         new Option<bool>("--clear-agent") { Description = "Use the repository-default agent policy." },
         ExecutionProfileOption(),
         new Option<bool>("--clear-profile")

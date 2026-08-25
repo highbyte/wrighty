@@ -28,6 +28,13 @@ public sealed record TestingConfig
     /// </summary>
     public IReadOnlyDictionary<string, AgentFailureSimulation>? AgentFailures { get; init; }
 
+    /// <summary>
+    /// Repository-scoped replacements for provider capacity probes. These are kept separate from
+    /// implementation failures because probes and implementation launches exercise different
+    /// worker boundaries.
+    /// </summary>
+    public IReadOnlyDictionary<string, ProviderCapacitySimulation>? CapacityProbes { get; init; }
+
     public AgentFailureSimulation? FindAgentFailure(string agent)
     {
         if (AgentFailures is null)
@@ -35,6 +42,16 @@ public sealed record TestingConfig
         if (AgentFailures.TryGetValue(agent, out var exact))
             return exact;
         return AgentFailures.FirstOrDefault(entry => string.Equals(
+            entry.Key, agent, StringComparison.OrdinalIgnoreCase)).Value;
+    }
+
+    public ProviderCapacitySimulation? FindCapacityProbe(string agent)
+    {
+        if (CapacityProbes is null)
+            return null;
+        if (CapacityProbes.TryGetValue(agent, out var exact))
+            return exact;
+        return CapacityProbes.FirstOrDefault(entry => string.Equals(
             entry.Key, agent, StringComparison.OrdinalIgnoreCase)).Value;
     }
 
@@ -139,7 +156,7 @@ public sealed record WorkerConfig
     /// file access across the whole machine — and should be an explicit, considered choice.</summary>
     public string? AgentPermissions { get; init; }
 
-    /// <summary>Per-agent overrides keyed by vendor name (claude, codex, copilot).</summary>
+    /// <summary>Per-agent overrides keyed by registered vendor id.</summary>
     public IReadOnlyDictionary<string, WorkerAgentConfig>? Agents { get; init; }
 
     /// <summary>

@@ -1,30 +1,33 @@
 # Agent skills
 
-The package contains a narrow, explicit-opt-in `wrighty` Agent Skill shared by Codex,
-Claude Code, and GitHub Copilot:
+The package contains a narrow `wrighty` Agent Skill shared by Codex, Claude Code, GitHub Copilot,
+and OpenCode:
 
 ```shell
 wrighty skill install --agent codex
 wrighty skill install --agent claude
 wrighty skill install --agent copilot
+wrighty skill install --agent opencode
 wrighty skill install --agent all
 ```
 
 Omitting `--agent`, or passing `--agent auto`, targets every supported agent CLI installed on the
-current machine. If both Codex and Copilot are installed, Wrighty writes their shared
+current machine. Codex, Copilot, and OpenCode use the same
 `.agents/skills/wrighty` destination once. With no supported CLI installed, automatic selection
-fails with `SKILL_AGENT_NOT_INSTALLED`. Use explicit `claude`, `codex`, or `copilot` when you want
+fails with `SKILL_AGENT_NOT_INSTALLED`. Use explicit `claude`, `codex`, `copilot`, or `opencode` when you want
 one destination, or `all` when you deliberately want every supported destination regardless of
 which CLIs are installed.
 
-Project scope is the default. It resolves to the Git root when available and otherwise the current
-directory. Use `--project-dir PATH` to choose another project or `--scope user` for a personal
-installation. Codex and Copilot share `.agents/skills/wrighty`; Claude uses
-`.claude/skills/wrighty`. An `all` installation creates those two physical copies.
+User scope is the default because one installation then works across repositories and worktrees.
+Use `--scope project` only when a repository deliberately needs its own copy. Project scope
+resolves to the Git root when available and otherwise the current directory; `--project-dir PATH`
+chooses another project root. Codex, Copilot, and OpenCode share `.agents/skills/wrighty`; Claude
+uses `.claude/skills/wrighty`. An `all` installation creates those two physical copies under the
+selected scope.
 
 Project-scoped skills intended for worktree workers must be committed. A Git worktree contains the
-selected commit, not ignored or merely untracked files. Alternatively, install the Wrighty skill at
-user scope so it is available to every repository and worktree:
+selected commit, not ignored or merely untracked files. The default user installation avoids that
+worktree coupling:
 
 ```shell
 wrighty skill install --agent all --scope user
@@ -36,17 +39,73 @@ user-scoped skill or the required project skill in `HEAD`. An ignored project co
 rejected with `WORKER_SKILL_UNAVAILABLE`; Wrighty does not silently copy or install executable
 agent instructions into a new worktree.
 
+Do not routinely install the same physical skill target at both scopes. Agent hosts do not share a
+portable precedence rule: Claude gives its user skill precedence, Copilot and OpenCode give the
+project copy precedence, and Codex may expose both same-named skills. Wrighty therefore reports
+both copies as a duplicate instead of claiming that either one wins. `skill install` refuses to
+create a second-scope copy with `SKILL_DUPLICATE`; `--force` is available for deliberate testing or
+an exceptional host-specific setup. Remove the unintended recognized copy with an explicit scope:
+
+```shell
+wrighty skill uninstall --agent codex --scope project
+wrighty skill uninstall --agent codex --scope user
+```
+
+Uninstall is idempotent for a missing target. It refuses an unrecognized installation, and requires
+`--force` before removing a recognized copy whose Wrighty-owned files were modified. An explicit
+scope is always required so a default cannot remove the wrong copy.
+
 Validate or update installed mechanics with:
 
 ```shell
-wrighty skill check --agent all
+wrighty skill check --agent all                 # user scope (default)
+wrighty skill check --agent all --scope project
 wrighty skill check --agent all --check-tracker
-wrighty skill update --agent all
+wrighty skill update --agent all                # user scope (default)
 ```
 
-Update copies assets bundled with the running `wrighty`; it never downloads skill content. It
-preserves a customized `description`. Modified tool-owned mechanics produce `SKILL_MODIFIED`
-unless `--force` is explicit. All skill operations support `--json`.
+`skill check` reports `missing`, `current`, `outdated`, `modified`, or `malformed`. A non-current
+state is inspection output rather than a command failure, so automation should inspect
+`result.installations[].state` from `--json` instead of relying on the exit code.
+
+Update copies assets bundled with the running `wrighty`; it never downloads skill content. Skill
+currency is determined by the bundled skill version and Wrighty-owned mechanics. The CLI version
+stored in `.wrighty-skill.json` is installation provenance and does not by itself make a skill
+outdated. Update preserves a customized `description`. Modified tool-owned mechanics produce
+`SKILL_MODIFIED` unless `--force` is explicit. All skill operations support `--json`.
+
+The agent-facing CLI entry points `init`, `pick`, `claim`, `resume`, `worker`, and `web` inspect
+both project- and user-scoped installations before running. They write non-fatal warnings to
+standard error for outdated, modified, or malformed copies, including the explicit `skill update`
+or `skill check` command to run. They also warn when both scopes are installed and give explicit
+uninstall commands. Standard output and the requested command's exit status are unchanged,
+including for `--json`; missing optional skills and a single current copy stay silent. The notice
+is best-effort, so a failed background inspection never blocks the requested operation.
+
+`wrighty init --check` also includes the inspected skill health in its validation report. Human
+output lists installed physical targets with scope, path, state, and installed/bundled versions;
+an entirely missing target is summarized once because installation remains optional. With
+`--json`, `result.skills[]` contains every physical target and scope, including `missing`, plus its
+agent IDs, versions, and whether the recognized copy can be updated safely.
+
+The web console's **Agents** menu combines enablement, capacity, and skill maintenance in one
+compact table. A healthy installation says **Current** with the normal success treatment; missing,
+outdated, modified, malformed, or duplicate targets contribute to its warning state and attention
+count. Codex, Copilot, and OpenCode each point to their shared physical target, while Claude has its
+own target.
+
+**Manage skill** expands one agent row without stacking another overlay. Its location selector
+switches one card between the User and Project path, state, and available **Install**, **Update**, or
+**Uninstall** action. An outdated row also provides an **Update skill** shortcut that updates every
+outdated location for that target. Per-agent skill controls remain disabled while that agent is
+disabled. The expanded row names every agent affected when the physical target is shared.
+
+The **Skills for all agents** footer can install missing skills for enabled, detected agents at the
+selected User or Project location, update every recognized outdated copy in its existing location,
+or uninstall safe copies from the selected location. Modified or malformed content remains CLI-only
+because the web console never applies `--force`. Existing copies at both scopes remain a warning
+until one is uninstalled. Every action refreshes the Agents menu without adding a success status
+message; failures remain visible as errors.
 
 ## Supported skill surfaces
 
@@ -64,6 +123,7 @@ supported skill surface:
 | Claude Code CLI or Desktop | Explicit only | `/wrighty Pick the next available item, implement it, run its tests, and finish it.` |
 | GitHub Copilot CLI or an IDE surface that exposes skill commands | Automatic or explicit | `/wrighty Work on tracker item #42 and finish it when complete.` |
 | GitHub Copilot coding agent or another surface without a skill slash command | Automatic, or named in the prompt | `Use the wrighty skill to work on tracker item #42 and finish it when complete.` |
+| OpenCode CLI | Automatic through its native skill tool, or named in the prompt | `Use the wrighty skill to work on tracker item #42 and finish it when complete.` |
 
 Codex Desktop accepts both `/wrighty` and `$wrighty` as explicit
 invocations. Codex also exposes installed skills through `/skills`; selecting this skill inserts
@@ -98,6 +158,9 @@ $wrighty Create a tracker item titled "Add retry telemetry" with priority P1.
 # GitHub Copilot
 /wrighty Show the available tracker items.
 Use the wrighty skill to claim tracker item #42 and update its priority to P0.
+
+# OpenCode CLI
+Use the wrighty skill to pick the next available tracker item and implement it.
 ```
 
 Slash-command availability is a feature of the coding-agent surface, not of the Wrighty CLI. If a

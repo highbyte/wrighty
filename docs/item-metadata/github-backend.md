@@ -62,7 +62,7 @@ only. The gesture and authority are still the operator's; Wrighty only transcrib
 | `Priority` | Single select | Optional authoritative priority. The actual field name is configurable. |
 | `Wrighty policy - execution` | Single select (`Manual only`, `Automatic allowed`) | Sole GitHub authorization for unattended worker launch. Only `Automatic allowed` authorizes work; unset is safely treated as manual-only. The field name is configurable. |
 | `Wrighty policy - context approval` | Single select (`Needs review`, `Approved`) | Authoritative content approval. The Needs review → Approved cycle establishes a fresh batch cutoff; the queue rule performs that same cycle rather than bypassing the field. Editing covered issue content still invalidates the approval at launch. |
-| `Wrighty policy - agent` | Single select (`Repository default`, `Claude`, `Codex`, `Copilot`) | Authoritative item routing policy after an explicit worker `--agent` override. Unset and Repository default mean no item-specific override. The field name is configurable. |
+| `Wrighty policy - agent` | Single select (`Repository default`, `Claude`, `Codex`, `Copilot`, `OpenCode`) | Authoritative item routing policy after an explicit worker `--agent` override. Unset and Repository default mean no item-specific override. The field name is configurable. |
 | `Wrighty creation - attempt ID` | Text | Durable retry identity after create succeeds. The actual field name is configurable. |
 | Native archived state | Project item state | Authoritative archive state. Archive neither closes the issue nor removes it from the Project. |
 | `Wrighty claim - claimant type` | Single select | Display-only projection of `agent`, `human`, `automation`, or `unknown`. Never read for authorization. |

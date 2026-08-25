@@ -45,7 +45,7 @@ usage() {
         "real issues/branches and drives a real agent. Set WRIGHTY_RUN_GITHUB_WALKTHROUGH_LIVE=1." \
         "" \
         "Options:" \
-        "  --agent NAME            Vendor you will drive: claude, codex, or copilot." \
+        "  --agent NAME            Vendor you will drive: claude, codex, copilot, or opencode." \
         "  --source-repo OWNER/REPO  Source to derive the -test repo from (default: current gh repo)." \
         "  --project-title TITLE   Project title to create/reuse (default: '$PROJECT_TITLE')." \
         "  --configuration NAME    Build configuration; defaults to Debug." \

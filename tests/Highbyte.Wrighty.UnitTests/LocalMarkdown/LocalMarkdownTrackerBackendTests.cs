@@ -1145,6 +1145,8 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
     public async Task Plain_init_outside_git_defaults_to_local_markdown()
     {
         Directory.CreateDirectory(directory);
+        var isolatedUserHome = Path.Combine(directory, "user-home");
+        Directory.CreateDirectory(isolatedUserHome);
         var start = new ProcessStartInfo("dotnet")
         {
             WorkingDirectory = directory,
@@ -1152,6 +1154,8 @@ public sealed class LocalMarkdownTrackerBackendTests : IDisposable
             RedirectStandardError = true,
             UseShellExecute = false
         };
+        start.Environment["HOME"] = isolatedUserHome;
+        start.Environment["USERPROFILE"] = isolatedUserHome;
         start.ArgumentList.Add(typeof(CliApplication).Assembly.Location);
         start.ArgumentList.Add("init");
         start.ArgumentList.Add("--yes");

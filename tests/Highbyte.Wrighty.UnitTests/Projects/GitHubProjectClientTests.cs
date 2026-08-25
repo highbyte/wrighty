@@ -4,6 +4,7 @@ using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.GitHub;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Projects;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.Projects;
 
@@ -1173,6 +1174,34 @@ public sealed class GitHubProjectClientTests
     }
 
     [Fact]
+    public async Task Init_check_requires_projection_options_from_the_supplied_agent_catalogue()
+    {
+        var future = new AgentDescriptor(
+            "future-agent",
+            "Future Agent",
+            "Example",
+            "future-agent",
+            AgentCapabilities.GitHubProjection,
+            Projection: new AgentProjection(
+                "Future Agent",
+                "Example future agent",
+                "Use Future Agent",
+                "PURPLE",
+                ProjectionOrder: 3,
+                PolicyOrder: 3));
+        var client = new GitHubProjectClient(
+            new GhApi(new QueueGhProcess(InitializedDiscoveryResponse)),
+            new MemoryCache(),
+            [.. BuiltInAgentRegistry.Descriptors, future]);
+
+        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(
+            () => client.InitializeAsync(Config, checkOnly: true, CancellationToken.None));
+
+        Assert.Equal("PROJECT_SCHEMA_INVALID", exception.Code);
+        Assert.Contains("Future Agent", exception.Message);
+    }
+
+    [Fact]
     public async Task InitializeAsync_adds_missing_agent_options_without_replacing_existing_ids()
     {
         var process = new QueueGhProcess(
@@ -1191,7 +1220,9 @@ public sealed class GitHubProjectClientTests
         Assert.True(result.Changed);
         Assert.Equal(8, process.Calls.Count);
         Assert.Contains(result.Actions, action =>
-            action.Contains("add options Claude, Copilot, Other", StringComparison.Ordinal));
+            action.Contains(
+                "add options Claude, Copilot, OpenCode, Other",
+                StringComparison.Ordinal));
         var agentUpdate = Assert.Single(
             process.Calls,
             call => call.StandardInput!.Contains(
@@ -1894,6 +1925,12 @@ public sealed class GitHubProjectClientTests
                 "name": { "raw": "Copilot", "html": "Copilot" },
                 "description": { "raw": "", "html": "" },
                 "color": "BLUE"
+              },
+              {
+                "id": "PREFERRED_OPENCODE",
+                "name": { "raw": "OpenCode", "html": "OpenCode" },
+                "description": { "raw": "", "html": "" },
+                "color": "PURPLE"
               }
             ]
           },
@@ -2277,7 +2314,8 @@ public sealed class GitHubProjectClientTests
                         { "id": "REPOSITORY_DEFAULT", "name": "Repository default", "description": "", "color": "GRAY" },
                         { "id": "PREFERRED_CLAUDE", "name": "Claude", "description": "", "color": "ORANGE" },
                         { "id": "PREFERRED_CODEX", "name": "Codex", "description": "", "color": "GREEN" },
-                        { "id": "PREFERRED_COPILOT", "name": "Copilot", "description": "", "color": "BLUE" }
+                        { "id": "PREFERRED_COPILOT", "name": "Copilot", "description": "", "color": "BLUE" },
+                        { "id": "PREFERRED_OPENCODE", "name": "OpenCode", "description": "", "color": "PURPLE" }
                       ]
                     },
                     {
@@ -2309,6 +2347,7 @@ public sealed class GitHubProjectClientTests
                         { "id": "TARGET_CODEX", "name": "Codex", "description": "", "color": "GREEN" },
                         { "id": "TARGET_CLAUDE", "name": "Claude", "description": "", "color": "ORANGE" },
                         { "id": "TARGET_COPILOT", "name": "Copilot", "description": "", "color": "BLUE" },
+                        { "id": "TARGET_OPENCODE", "name": "OpenCode", "description": "", "color": "PURPLE" },
                         { "id": "TARGET_OTHER", "name": "Other", "description": "", "color": "GRAY" }
                       ]
                     },
@@ -2323,6 +2362,7 @@ public sealed class GitHubProjectClientTests
                         { "id": "CODEX", "name": "Codex", "description": "", "color": "GREEN" },
                         { "id": "CLAUDE", "name": "Claude", "description": "", "color": "ORANGE" },
                         { "id": "COPILOT", "name": "Copilot", "description": "", "color": "BLUE" },
+                        { "id": "OPENCODE", "name": "OpenCode", "description": "", "color": "PURPLE" },
                         { "id": "OTHER", "name": "Other", "description": "", "color": "GRAY" }
                       ]
                     },
@@ -2564,7 +2604,8 @@ public sealed class GitHubProjectClientTests
                         { "id": "REPOSITORY_DEFAULT", "name": "Repository default", "description": "", "color": "GRAY" },
                         { "id": "PREFERRED_CLAUDE", "name": "Claude", "description": "", "color": "ORANGE" },
                         { "id": "PREFERRED_CODEX", "name": "Codex", "description": "", "color": "GREEN" },
-                        { "id": "PREFERRED_COPILOT", "name": "Copilot", "description": "", "color": "BLUE" }
+                        { "id": "PREFERRED_COPILOT", "name": "Copilot", "description": "", "color": "BLUE" },
+                        { "id": "PREFERRED_OPENCODE", "name": "OpenCode", "description": "", "color": "PURPLE" }
                       ]
                     },
                     {
@@ -2626,6 +2667,7 @@ public sealed class GitHubProjectClientTests
             ["Codex"] = "CODEX",
             ["Claude"] = "CLAUDE",
             ["Copilot"] = "COPILOT",
+            ["OpenCode"] = "OPENCODE",
             ["Other"] = "OTHER"
         },
         "SESSION_FIELD",
@@ -2652,7 +2694,8 @@ public sealed class GitHubProjectClientTests
             ["Repository default"] = "REPOSITORY_DEFAULT",
             ["Claude"] = "PREFERRED_CLAUDE",
             ["Codex"] = "PREFERRED_CODEX",
-            ["Copilot"] = "PREFERRED_COPILOT"
+            ["Copilot"] = "PREFERRED_COPILOT",
+            ["OpenCode"] = "PREFERRED_OPENCODE"
         },
         DispatchStateFieldId: "WORKER_ACTIVITY_FIELD",
         DispatchStateOptionOptions: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -2669,6 +2712,7 @@ public sealed class GitHubProjectClientTests
             ["Claude"] = "TARGET_CLAUDE",
             ["Codex"] = "TARGET_CODEX",
             ["Copilot"] = "TARGET_COPILOT",
+            ["OpenCode"] = "TARGET_OPENCODE",
             ["Other"] = "TARGET_OTHER"
         },
         DispatchDetailFieldId: "WORKER_STATUS_FIELD");

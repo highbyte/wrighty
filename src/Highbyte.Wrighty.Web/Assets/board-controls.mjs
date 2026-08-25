@@ -74,6 +74,25 @@ export function dismissBoardFilterMenu(menu, target) {
   return true;
 }
 
+export function dismissHeaderPopovers(doc, target) {
+  if (!doc?.querySelectorAll || !target) return 0;
+  // A modal confirmation belongs to the action that opened it. Treating its Confirm or Cancel
+  // button as an outside click collapses the underlying popover for the duration of a long-running
+  // request, then makes it appear to reopen when the response restores the captured state.
+  if (target.closest?.("dialog")) return 0;
+  // A fast HTMX response can replace a menu before the originating click bubbles here. The new
+  // menu cannot contain the now-detached target, but target.closest() still identifies which kind
+  // of menu the click came from. Keep that replacement open while closing other menu types.
+  const sourceMenu = target.closest?.(".agents-menu");
+  let closed = 0;
+  doc.querySelectorAll(".agents-menu[open]").forEach(menu => {
+    if (sourceMenu || menu.contains(target)) return;
+    menu.open = false;
+    closed += 1;
+  });
+  return closed;
+}
+
 const structuredBoardFilterNames = new Set([
   "claimKind", "agent", "priority", "claimState", "updatedWithin"
 ]);

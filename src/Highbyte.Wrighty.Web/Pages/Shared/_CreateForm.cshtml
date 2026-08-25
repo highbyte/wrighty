@@ -52,9 +52,9 @@
       <label>Agent policy
         <select name="agentPolicy">
           <option value="">Repository default</option>
-          @foreach (var agent in new[] { "claude", "codex", "copilot" })
+          @foreach (var agent in Model.AgentOptions)
           {
-            <option value="@agent" selected="@(agent == Model.AgentPolicy)">@agent</option>
+            <option value="@agent.Id" selected="@(agent.Id == Model.AgentPolicy)">@agent.DisplayName</option>
           }
         </select>
       </label>

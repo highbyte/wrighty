@@ -208,12 +208,15 @@ public sealed record ItemPageModel(
     DateTimeOffset? CreatedAt = null,
     DateTimeOffset? UpdatedAt = null,
     bool QueueAuthorizesExecution = false,
-    string WorkerQueueStatus = "Worker queue")
+    string WorkerQueueStatus = "Worker queue",
+    IReadOnlyList<AgentOptionView>? AvailableAgents = null)
 {
     public IReadOnlyList<string> EffectiveExecutionProfiles => ExecutionProfiles ?? [];
 
     public IReadOnlyDictionary<string, string> EffectiveFields =>
         Fields ?? EmptyFields;
+
+    public IReadOnlyList<AgentOptionView> AgentOptions => AvailableAgents ?? [];
 
     private static readonly IReadOnlyDictionary<string, string> EmptyFields =
         new Dictionary<string, string>();
@@ -245,7 +248,8 @@ public sealed record ProviderCapacityView(
     string? Reason,
     DateTimeOffset? Until,
     AgentFailureConfidence Confidence,
-    int ConsecutiveFailures)
+    int ConsecutiveFailures,
+    bool Simulated)
 {
     public bool ProbeInProgress => State == ProviderCapacityState.ProbeInProgress;
     public bool HasCapacityFailure => ConsecutiveFailures > 0;
@@ -257,7 +261,8 @@ public sealed record ProviderCapacityView(
         null,
         null,
         AgentFailureConfidence.Authoritative,
-        0);
+        0,
+        false);
 
     public static ProviderCapacityView From(ProviderCapacity availability) => new(
         availability.Agent,
@@ -266,7 +271,8 @@ public sealed record ProviderCapacityView(
         availability.Reason,
         availability.UnavailableUntil,
         availability.Confidence,
-        availability.ConsecutiveFailures);
+        availability.ConsecutiveFailures,
+        availability.Simulated);
 
     private static string Label(string agentType) =>
         string.IsNullOrWhiteSpace(agentType)
@@ -274,12 +280,40 @@ public sealed record ProviderCapacityView(
             : char.ToUpperInvariant(agentType[0]) + agentType[1..];
 }
 
-public sealed record ProviderCapacityPageModel(
-    IReadOnlyList<ProviderCapacityView> Providers,
+/// <summary>One compact row in the machine-local agent inventory.</summary>
+public sealed record AgentInventoryRow(
+    string Agent,
+    string AgentLabel,
+    bool Detected,
+    bool Selected,
+    bool Enabled,
+    string? ExecutablePath,
+    ProviderCapacityView? Capacity,
+    SkillTargetStatus? Skill)
+{
+    public bool ProbeInProgress => Capacity?.ProbeInProgress == true;
+
+    public bool CapacityUnavailable =>
+        Capacity?.State == ProviderCapacityState.UnavailableUntil;
+
+    public bool NeedsAttention => (Selected && !Detected) || Enabled &&
+        (CapacityUnavailable || Capacity?.Simulated == true ||
+         Skill?.NeedsAttention == true);
+}
+
+public sealed record AgentInventoryPageModel(
+    IReadOnlyList<AgentInventoryRow> Agents,
     string Revision,
+    string UserConfigurationRevision,
     string? Notice = null,
     string? ErrorCode = null,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null,
+    bool MenuOpen = false)
+{
+    public int EnabledCount => Agents.Count(agent => agent.Enabled);
+
+    public int AttentionCount => Agents.Count(agent => agent.NeedsAttention);
+}
 
 /// <summary>
 /// The captured outcome of the most recent agent run, surfaced in the item panel's "Last run"
@@ -378,7 +412,13 @@ public sealed record CreateItemPageModel(
     bool QueueAuthorizesExecution,
     string WorkerQueueStatus,
     string? ErrorCode = null,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null,
+    IReadOnlyList<AgentOptionView>? AvailableAgents = null)
+{
+    public IReadOnlyList<AgentOptionView> AgentOptions => AvailableAgents ?? [];
+}
+
+public sealed record AgentOptionView(string Id, string DisplayName);
 
 public sealed record GitHubTargetView(
     string Host,
@@ -417,7 +457,7 @@ public sealed record OperationsPageModel(
     string? TargetErrorMessage = null,
     OperationsListQuery? Query = null,
     bool IsTruncated = false,
-    IReadOnlyList<string>? AvailableAgents = null,
+    IReadOnlyList<AgentOptionView>? AvailableAgents = null,
     IReadOnlyList<string>? AvailablePriorities = null,
     IReadOnlyList<string>? AvailableWorkflowStatuses = null,
     string? WorkerNotice = null,
@@ -429,7 +469,7 @@ public sealed record OperationsPageModel(
 
     public bool LocalClaimFiltersAvailable => Capabilities.LocalBoard;
 
-    public IReadOnlyList<string> AgentOptions => AvailableAgents ?? [];
+    public IReadOnlyList<AgentOptionView> AgentOptions => AvailableAgents ?? [];
 
     public IReadOnlyList<string> PriorityOptions => AvailablePriorities ?? [];
 
@@ -449,6 +489,9 @@ public sealed record SettingsPageModel(
     // Registered adapters with this host's effective installation state. Testing overrides may
     // deliberately turn an installed runtime into a simulated missing one.
     IReadOnlyList<Highbyte.Wrighty.Workers.AgentRuntime> AgentRuntimes,
+    // Immutable built-in identity and display metadata; unlike runtimes this is not affected by
+    // installation or testing overlays.
+    IReadOnlyList<Highbyte.Wrighty.Workers.AgentDescriptor> AgentDescriptors,
     // What each installed agent reports it can run. Empty when discovery is unavailable, which the
     // form renders as a free-text field rather than an empty picker.
     IReadOnlyList<Highbyte.Wrighty.Workers.AgentModelCatalog> AgentModels,
@@ -487,16 +530,12 @@ public sealed record ConfigurationFormDraft(
     string? UsageFailureMaxAttempts = null,
     string? UsageFailureResetGraceMinutes = null,
     bool UsageFailureAllowCrossAgentHandoff = false,
-    string? UsageFailureClaudeFallbacks = null,
-    string? UsageFailureCodexFallbacks = null,
-    string? UsageFailureCopilotFallbacks = null,
+    IReadOnlyDictionary<string, string?>? UsageFailureFallbacks = null,
     string? LeaseMinutes = null,
     bool UseWorkerQueue = true,
     string? RequirementsAssessmentMode = null,
     string? AgentPermissions = null,
-    string? ClaudePermissions = null,
-    string? CodexPermissions = null,
-    string? CopilotPermissions = null,
+    IReadOnlyDictionary<string, string?>? AgentPermissionOverrides = null,
     string? WorktreeRoot = null,
     string? BranchFormat = null,
     string? WorktreeNameFormat = null,
@@ -518,7 +557,9 @@ public sealed record ConfigurationFormDraft(
     string? DebounceSeconds = null,
     string? LocalMarkdownStatuses = null,
     string? LocalMarkdownPriorities = null,
-    string? DefaultCreateStatus = null);
+    string? DefaultCreateStatus = null,
+    string? CapacityProbeResult = null,
+    double? CapacityProbeRetryAfterSeconds = null);
 
 /// <summary>
 /// The one place a machine operational status becomes a human label, shared by the board cards

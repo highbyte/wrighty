@@ -4,12 +4,17 @@ using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.Errors;
 using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty;
 
-public sealed class TrackerService(ITrackerBackendRegistry backends)
+public sealed class TrackerService(
+    ITrackerBackendRegistry backends,
+    AgentRegistry? agentRegistry = null)
 {
     private static readonly string[] ContextApprovalPendingFields = ["contextApproval"];
+    private readonly IReadOnlyList<string> supportedAgentIds =
+        agentRegistry?.WorkerIds ?? BuiltInAgentRegistry.Ids;
 
     public ITrackerBackend Backend(TrackerConfig config) => backends.Get(config.Backend);
 
@@ -84,6 +89,9 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         if (enforceEntryStatus)
             WorkItemCreationPolicy.EnsureAllowed(config, status);
         var resolvedRequest = request with { Status = status };
+        WorkItemPatchValidator.ValidateAgentPolicy(
+            resolvedRequest.AgentPolicy,
+            supportedAgentIds);
         return Backend(config).CreateAsync(
             config,
             new CreateWorkItemOperation(
@@ -178,7 +186,7 @@ public sealed class TrackerService(ITrackerBackendRegistry backends)
         patch = workerQueueRule.Patch;
         if (patch.AutomaticExecutionAllowed is { IsSpecified: true, Value: false })
             patch = patch with { DispatchState = OptionalValue<string?>.From(null) };
-        WorkItemPatchValidator.Validate(patch);
+        WorkItemPatchValidator.Validate(patch, supportedAgentIds);
         var result = await Backend(config).UpdateAsync(
             config,
             id,

@@ -7,7 +7,8 @@ namespace Highbyte.Wrighty.Workers;
 ///
 /// Three states rather than two, because the vendors genuinely differ in what they will tell us:
 /// claude reports it for every model, codex reports it for every model, and copilot reports it only
-/// for the session's *current* model. Collapsing <see cref="Unknown"/> into <see cref="No"/> would
+/// for the session's *current* model, while OpenCode reports per-model variants. Collapsing
+/// <see cref="Unknown"/> into <see cref="No"/> would
 /// invent a refusal the vendor never made; collapsing it into <see cref="Yes"/> would invent a
 /// guarantee.
 ///
@@ -157,9 +158,8 @@ public sealed record AgentModelCatalog(
 /// <summary>
 /// Asks one locally installed agent what it can run, without starting an inference turn.
 ///
-/// Implemented per vendor rather than behind a shared client, because the three protocols have
-/// nothing in common — a control-request over the stream-json channel, an app-server JSONL exchange,
-/// and an ACP JSON-RPC session. The shared abstraction is this result, not the transport.
+/// Implemented per vendor rather than behind a shared client, because the protocols have nothing
+/// in common. The shared abstraction is this result, not the transport.
 /// </summary>
 public interface IAgentModelDiscovery
 {

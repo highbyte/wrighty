@@ -37,7 +37,7 @@ usage() {
         "you run the actual 'wrighty worker' commands in a second terminal." \
         "" \
         "Options:" \
-        "  --agent NAME            Vendor you will drive: claude, codex, or copilot." \
+        "  --agent NAME            Vendor you will drive: claude, codex, copilot, or opencode." \
         "                          Prompted interactively when omitted." \
         "  --configuration NAME    Build configuration; defaults to Debug." \
         "  --skip-build            Use the existing local build output." \

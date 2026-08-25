@@ -11,6 +11,7 @@ using Highbyte.Wrighty.LocalMarkdown;
 using Highbyte.Wrighty.Importing;
 using Highbyte.Wrighty.Workers;
 using Highbyte.Wrighty.Cli.Skills;
+using Highbyte.Wrighty.Web;
 using static Highbyte.Wrighty.Text.Grammar;
 
 namespace Highbyte.Wrighty.Cli.Output;
@@ -302,6 +303,8 @@ public sealed class OutputWriter(
             var state = availability.State == ProviderCapacityState.ProbeInProgress
                 ? "capacity probe in progress"
                 : "automatic work paused";
+            if (availability.Simulated)
+                state += " (simulated for this repository)";
             var until = availability.UnavailableUntil is { } timestamp
                 ? $" until {timestamp:O}"
                 : string.Empty;
@@ -861,7 +864,8 @@ public sealed class OutputWriter(
         TrackerInitializationResult result,
         bool checkOnly,
         bool json,
-        AgentRuntimeSnapshot? runtimes = null)
+        AgentRuntimeSnapshot? runtimes = null,
+        IReadOnlyList<WebSkillInstallation>? skills = null)
     {
         var local = string.Equals(
             result.Config.Backend,
@@ -869,11 +873,11 @@ public sealed class OutputWriter(
             StringComparison.OrdinalIgnoreCase);
         if (json)
         {
-            await WriteInitializationJsonAsync(result, checkOnly, local, runtimes);
+            await WriteInitializationJsonAsync(result, checkOnly, local, runtimes, skills);
             return;
         }
 
-        await WriteInitializationHumanAsync(result, checkOnly, local, runtimes);
+        await WriteInitializationHumanAsync(result, checkOnly, local, runtimes, skills);
     }
 
     public async Task WriteImportAsync(LocalMarkdownImportResult result, bool json)
@@ -972,7 +976,8 @@ public sealed class OutputWriter(
         TrackerInitializationResult result,
         bool checkOnly,
         bool local,
-        AgentRuntimeSnapshot? runtimes) => WriteJsonAsync(new
+        AgentRuntimeSnapshot? runtimes,
+        IReadOnlyList<WebSkillInstallation>? skills) => WriteJsonAsync(new
         {
             schemaVersion = 1,
             result = new
@@ -1003,6 +1008,21 @@ public sealed class OutputWriter(
                     executable = runtime.ExecutablePath,
                     readiness = runtime.Readiness.ToString().ToLowerInvariant()
                 }).ToArray(),
+                skills = skills?.Select(skill => new
+                {
+                    skill.AgentSelection,
+                    agents = skill.AgentSelection.Split(
+                        ',',
+                        StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
+                    label = skill.AgentLabel,
+                    skill.Scope,
+                    skill.Path,
+                    installed = skill.State != WebSkillInstallationState.Missing,
+                    state = skill.State.ToString().ToLowerInvariant(),
+                    skill.InstalledVersion,
+                    skill.BundledVersion,
+                    skill.CanUpdate
+                }).ToArray(),
                 actions = result.Actions
             }
         });
@@ -1011,16 +1031,22 @@ public sealed class OutputWriter(
         TrackerInitializationResult result,
         bool checkOnly,
         bool local,
-        AgentRuntimeSnapshot? runtimes)
+        AgentRuntimeSnapshot? runtimes,
+        IReadOnlyList<WebSkillInstallation>? skills)
     {
         await output.WriteLineAsync($"Backend: {result.Config.Backend}");
         await output.WriteLineAsync($"Backend selection: {result.BackendSelection}");
         await WriteInitializationTargetAsync(result, local);
         await output.WriteLineAsync($"Configuration: {result.ConfigPath}");
-        await WriteInitializationAgentsAsync(result, runtimes);
-        await output.WriteLineAsync(InitializationResultMessage(result, checkOnly));
+        var resultMessage = InitializationResultMessage(result, checkOnly);
+        await output.WriteLineAsync(result.Actions.Count > 0 ? $"{resultMessage}:" : resultMessage);
         foreach (var action in result.Actions)
             await output.WriteLineAsync($"- {action}");
+        await output.WriteLineAsync();
+        await WriteInitializationAgentsAsync(result, runtimes);
+        if (skills is not null)
+            await output.WriteLineAsync();
+        await WriteInitializationSkillsAsync(skills);
     }
 
     private async Task WriteInitializationTargetAsync(
@@ -1070,12 +1096,44 @@ public sealed class OutputWriter(
             ? $"- {runtime.Agent}: installed at {runtime.ExecutablePath}; readiness unknown"
             : $"- {runtime.Agent}: not installed; readiness unknown";
 
+    private async Task WriteInitializationSkillsAsync(
+        IReadOnlyList<WebSkillInstallation>? skills)
+    {
+        if (skills is null)
+        {
+            return;
+        }
+
+        await output.WriteLineAsync("Wrighty agent skills:");
+        foreach (var group in skills.GroupBy(
+                     skill => skill.AgentSelection,
+                     StringComparer.OrdinalIgnoreCase))
+        {
+            var installed = group
+                .Where(skill => skill.State != WebSkillInstallationState.Missing)
+                .ToArray();
+            if (installed.Length == 0)
+            {
+                await output.WriteLineAsync($"- {group.First().AgentLabel}: not installed");
+                continue;
+            }
+
+            foreach (var skill in installed)
+            {
+                await output.WriteLineAsync(
+                    $"- {skill.AgentLabel} ({skill.Scope}): " +
+                    $"{skill.State.ToString().ToLowerInvariant()} at {skill.Path}; " +
+                    $"installed {skill.InstalledVersion ?? "unknown"}; bundled {skill.BundledVersion}");
+            }
+        }
+    }
+
     private static string InitializationResultMessage(
         TrackerInitializationResult result,
         bool checkOnly)
     {
         if (checkOnly)
-            return "configuration and Wrighty resources are valid";
+            return "Configuration and Wrighty resources are valid";
         return result.Changed
             ? "Wrighty initialized"
             : "Wrighty already initialized";

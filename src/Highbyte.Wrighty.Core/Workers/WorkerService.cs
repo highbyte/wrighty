@@ -37,7 +37,9 @@ public sealed class WorkerService(
     // Optional and invoked only for implementation turns. Agent checks, provider probes, and the
     // restricted requirements-readiness turn remain real so a simulation cannot counterfeit
     // installation health or create a fake resumable session.
-    IAgentFailureSimulator? failureSimulator = null)
+    IAgentFailureSimulator? failureSimulator = null,
+    IProviderCapacitySimulator? capacitySimulator = null,
+    AgentRegistry? agentRegistry = null)
     : IProviderCapacityProbeService
 {
     // The lifecycle event name, distinct from the WorkerDispatchStates value of the same text: one
@@ -73,12 +75,21 @@ public sealed class WorkerService(
         skillAvailability ?? NoOpWorkerSkillAvailability.Instance;
     private readonly IProviderCapacityStore providerCapacity =
         providerCapacityStore ?? NoOpProviderCapacityStore.Instance;
+    private readonly IProviderCapacitySimulator simulatedCapacity =
+        capacitySimulator ?? NoOpProviderCapacitySimulator.Instance;
     private readonly bool providerCapacityEnabled = providerCapacityStore is not null;
     private readonly IReadOnlyDictionary<string, IAgentCapacityProbe> capacityProbesByAgent =
         (capacityProbes ?? [])
         .ToDictionary(probe => probe.Agent, StringComparer.OrdinalIgnoreCase);
     private readonly IAgentRuntimeCatalog runtimes =
         runtimeCatalog ?? new AssumeInstalledAgentRuntimeCatalog(adapters);
+    private readonly IReadOnlyDictionary<string, IAgentSessionExporter> sessionExportersByAgent =
+        (agentRegistry?.Integrations ?? [])
+        .Where(integration => integration.SessionExporter is not null)
+        .ToDictionary(
+            integration => integration.Descriptor.Id,
+            integration => integration.SessionExporter!,
+            StringComparer.OrdinalIgnoreCase);
     private readonly WorkerInterruptionJournal? interruptionJournal =
         cachePaths is null ? null : new WorkerInterruptionJournal(cachePaths);
 
@@ -169,9 +180,7 @@ public sealed class WorkerService(
             var path = executables.Resolve(adapter.ExecutableName);
             var probeId = new WorkItemId("worker:check");
             var probeGeneration = $"probe:{Guid.NewGuid():N}";
-            var handle = adapter.Agent == "claude"
-                ? SessionHandles.ForClaude(probeId, probeGeneration)
-                : SessionHandles.ForNamedVendor(probeId, probeGeneration);
+            var handle = adapter.CreateSessionHandle(probeId, probeGeneration);
             var result = await processes.RunAsync(
                 adapter.BuildCheck(handle, new Workspace(Path.GetFullPath(repositoryPath))),
                 adapter,
@@ -180,8 +189,8 @@ public sealed class WorkerService(
                 sessionStarted: null,
                 killOnCancellation: true,
                 cancellationToken: cancellationToken);
-            var handleMatches = adapter.Agent != "claude" ||
-                                string.Equals(result.SessionId, handle.Value, StringComparison.OrdinalIgnoreCase);
+            var handleMatches = result.SessionId is not null &&
+                                adapter.MatchesEmittedSessionId(handle, result.SessionId);
             if (result.Outcome != AgentOutcome.Succeeded || result.SessionId is null || !handleMatches)
                 throw new TrackerException("AGENT_CHECK_FAILED",
                     $"{adapter.Agent} probe failed or did not emit the expected session handle.", 7,
@@ -204,11 +213,6 @@ public sealed class WorkerService(
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
-        if (!providerCapacityEnabled)
-            throw new TrackerException(
-                "PROVIDER_PROBE_UNAVAILABLE",
-                "Provider capacity probing requires the machine-local availability store.",
-                7);
         var agentName = NormalizeAgent(agentType);
         if (agentName is null)
             throw new TrackerException(
@@ -223,6 +227,30 @@ public sealed class WorkerService(
         EnsureAgentInstalled(agentName, null, "option");
 
         var observedAt = now();
+        if (await simulatedCapacity.TryCreateAsync(
+                config, agentName, observedAt, cancellationToken) is { } simulated)
+        {
+            await emit(new WorkerEvent(
+                "provider-probe-started",
+                Agent: agentName,
+                WorkspacePath: Path.GetFullPath(repositoryPath),
+                Message: "Applied the repository's simulated provider capacity probe without starting the vendor CLI.",
+                ProviderCapacity: simulated));
+            await emit(new WorkerEvent(
+                simulated.State == ProviderCapacityState.Available
+                    ? "provider-available"
+                    : "provider-unavailable",
+                Agent: agentName,
+                WorkspacePath: Path.GetFullPath(repositoryPath),
+                Message: simulated.Reason,
+                ProviderCapacity: simulated));
+            return simulated;
+        }
+        if (!providerCapacityEnabled)
+            throw new TrackerException(
+                "PROVIDER_PROBE_UNAVAILABLE",
+                "Provider capacity probing requires the machine-local availability store.",
+                7);
         var priorAvailability = await providerCapacity.GetAsync(
             agentName,
             cancellationToken);
@@ -265,9 +293,7 @@ public sealed class WorkerService(
         {
             var probeId = new WorkItemId($"provider:{agentName}");
             var generation = $"probe:{Guid.NewGuid():N}";
-            var handle = agentName == "claude"
-                ? SessionHandles.ForClaude(probeId, generation)
-                : SessionHandles.ForNamedVendor(probeId, generation);
+            var handle = adapter.CreateSessionHandle(probeId, generation);
             var result = await processes.RunAsync(
                 adapter.BuildCheck(
                     handle,
@@ -341,6 +367,12 @@ public sealed class WorkerService(
         }
     }
 
+    public Task<ProviderCapacity?> GetSimulatedCapacityAsync(
+        TrackerConfig config,
+        string agentType,
+        CancellationToken cancellationToken) =>
+        simulatedCapacity.TryCreateAsync(config, agentType, now(), cancellationToken);
+
     public async Task<WorkerRunSummary> RunAsync(
         TrackerConfig config,
         WorkerOptions options,
@@ -363,7 +395,7 @@ public sealed class WorkerService(
     {
         Validate(options);
         if (!options.DryRun)
-            EnsureWorkerHostAvailable(options);
+            await EnsureWorkerHostAvailableAsync(options, control.InterruptionToken);
         await ReportDisabledRequirementsAssessmentAsync(config, emit);
         if (options.DryRun)
             return await DryRunAsync(
@@ -598,7 +630,8 @@ public sealed class WorkerService(
             AgentContextSource.ExplicitOption,
             ClaimantKind: kind,
             ClaimantId: claimantId);
-        var providerStates = await ProviderStatesAsync(cancellationToken);
+        var agentSettings = await LoadUserSettingsAsync(cancellationToken);
+        var providerStates = await ProviderStatesAsync(config, cancellationToken);
         await using var workspaceLease = options.WorkspaceMode == WorkspaceMode.Current
             ? await workspaceLocks.AcquireAsync(repositoryPath, cancellationToken)
             : null;
@@ -611,7 +644,11 @@ public sealed class WorkerService(
             detail =>
             {
                 var evaluation = EvaluateCandidate(
-                    detail, options, config.EffectiveWorker.DefaultAgent, diagnostics);
+                    detail,
+                    options,
+                    config.EffectiveWorker.DefaultAgent,
+                    agentSettings,
+                    diagnostics);
                 if (!evaluation.Eligible)
                     return false;
                 if (providerStates.TryGetValue(evaluation.Agent!, out var provider) &&
@@ -735,7 +772,7 @@ public sealed class WorkerService(
         CancellationToken cancellationToken)
     {
         Validate(options);
-        EnsureWorkerHostAvailable(options);
+        await EnsureWorkerHostAvailableAsync(options, cancellationToken);
         var status = options.FromStatus ?? config.DefaultPickFrom;
         var diagnostics = new WorkerCandidateDiagnostics(status);
         var queued = await FirstQueuedCandidateAsync(
@@ -798,6 +835,7 @@ public sealed class WorkerService(
     {
         var items = await tracker.ListAsync(
             config, new ListWorkItemsRequest(status, null), cancellationToken);
+        var agentSettings = await LoadUserSettingsAsync(cancellationToken);
         PreflightCandidate? first = null;
         var readyAgents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var summary in items)
@@ -805,11 +843,15 @@ public sealed class WorkerService(
             var detail = await tracker.GetAsync(config, summary.Id, cancellationToken);
             var candidate = ProjectWorkerQueueAuthorization(config, detail, status);
             var evaluation = EvaluateCandidate(
-                candidate, options, config.EffectiveWorker.DefaultAgent, diagnostics);
+                candidate,
+                options,
+                config.EffectiveWorker.DefaultAgent,
+                agentSettings,
+                diagnostics);
             if (!evaluation.Eligible)
                 continue;
             if (await IsProviderBlockedForFreshAsync(
-                    evaluation.Agent!, diagnostics, cancellationToken))
+                    config, evaluation.Agent!, diagnostics, cancellationToken))
                 continue;
             var ownership = await tracker.GetClaimOwnershipAsync(
                 config, detail.Id, cancellationToken);
@@ -1028,10 +1070,12 @@ public sealed class WorkerService(
         var detail = await tracker.GetAsync(config, id, cancellationToken);
         EnsureFreshStatus(config, options, detail);
         var diagnostics = new WorkerCandidateDiagnostics(detail.Status ?? "(none)");
+        var agentSettings = await LoadUserSettingsAsync(cancellationToken);
         var evaluation = EvaluateCandidate(
             detail,
             options,
             config.EffectiveWorker.DefaultAgent,
+            agentSettings,
             diagnostics);
         if (!evaluation.Eligible)
         {
@@ -1074,10 +1118,12 @@ public sealed class WorkerService(
         var detail = await tracker.GetAsync(config, id, cancellationToken);
         EnsureFreshStatus(config, options, detail);
         var diagnostics = new WorkerCandidateDiagnostics(detail.Status ?? "(none)");
+        var agentSettings = await LoadUserSettingsAsync(cancellationToken);
         var evaluation = EvaluateCandidate(
             detail,
             options,
             config.EffectiveWorker.DefaultAgent,
+            agentSettings,
             diagnostics);
         if (!evaluation.Eligible)
         {
@@ -1095,9 +1141,7 @@ public sealed class WorkerService(
         {
             var adapter = adaptersByName[agentName];
             var previewGeneration = $"dry-run:{Guid.NewGuid():N}";
-            var session = adapter.Agent == "claude"
-                ? SessionHandles.ForClaude(detail.Id, previewGeneration)
-                : SessionHandles.ForNamedVendor(detail.Id, previewGeneration);
+            var session = adapter.CreateSessionHandle(detail.Id, previewGeneration);
             var workspace = new Workspace(Path.GetFullPath(repositoryPath),
                 options.WorkspaceMode == WorkspaceMode.Worktree);
             // Resolved here too, and allowed to throw: a dry run exists to answer "what would this
@@ -1185,6 +1229,8 @@ public sealed class WorkerService(
         var ownership = await tracker.GetClaimOwnershipAsync(config, id, cancellationToken);
         var (agentName, adapter, sessionId, recordedWorkspace) =
             ResolveResumeTarget(options, id, ownership, repositoryPath);
+        await EnsureAgentEnabledAsync(
+            agentName, options.Agent, id, "session", cancellationToken);
 
         var workspacePath = Path.GetFullPath(recordedWorkspace);
         var repository = Path.GetFullPath(repositoryPath);
@@ -1195,7 +1241,7 @@ public sealed class WorkerService(
         // preview shows the shape of the launch, not the prompt a real one would carry.
         var invocation = adapter.BuildResume(handle, workspace,
             WorkerPrompt.Append(
-                WorkerPrompt.ForResume(id, agentName),
+                WorkerPrompt.ForResume(id),
                 WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit)),
             PermissionsFor(config, agentName));
         if (options.DryRun)
@@ -1271,14 +1317,14 @@ public sealed class WorkerService(
         CancellationToken cancellationToken,
         bool operatorRequested = false)
     {
-        var adapter = adaptersByName[agentName];
+        var adapter = RequireResumeAdapter(adaptersByName[agentName]);
         var workspacePath = Path.GetFullPath(session.WorkspacePath!);
         var repository = Path.GetFullPath(repositoryPath);
         var workspace = new Workspace(workspacePath, !SamePath(workspacePath, repository));
         var handle = new SessionHandle(session.SessionId!);
         var invocation = adapter.BuildResume(
             handle, workspace, WorkerPrompt.Append(
-                WorkerPrompt.ForResume(detail.Id, agentName),
+                WorkerPrompt.ForResume(detail.Id),
                 WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit)),
             PermissionsFor(config, agentName));
         if (options.DryRun)
@@ -1448,7 +1494,7 @@ public sealed class WorkerService(
     /// not a complete, owned, same-installation address. Kept out of <see cref="ResumeAsync"/> so
     /// that method stays within its complexity budget as launch stages are added to it.
     /// </summary>
-    private (string AgentName, IAgentAdapter Adapter, string SessionId, string WorkspacePath)
+    private (string AgentName, IAgentResumeAdapter Adapter, string SessionId, string WorkspacePath)
         ResolveResumeTarget(
         WorkerOptions options,
         WorkItemId id,
@@ -1484,8 +1530,19 @@ public sealed class WorkerService(
                 ownership.Agent,
                 repositoryPath,
                 ownership.WorkspacePath);
-        return (agentName, adapter, ownership.SessionId, ownership.WorkspacePath);
+        return (
+            agentName,
+            RequireResumeAdapter(adapter),
+            ownership.SessionId,
+            ownership.WorkspacePath);
     }
+
+    private static IAgentResumeAdapter RequireResumeAdapter(IAgentAdapter adapter) =>
+        adapter as IAgentResumeAdapter ??
+        throw new TrackerException(
+            "AGENT_RESUME_UNSUPPORTED",
+            $"Agent '{adapter.Agent}' does not support resuming a recorded session.",
+            3);
 
     private string ValidateRecordedSession(
         WorkerOptions options,
@@ -1690,6 +1747,8 @@ public sealed class WorkerService(
              string.Equals(requestedAgent, directedTarget, StringComparison.OrdinalIgnoreCase)))
         {
             ValidateHandoffTargetCore(directedTarget, repositoryPath, id, session);
+            await EnsureAgentEnabledAsync(
+                directedTarget, options.Agent, id, "handoff", cancellationToken);
             return new ResolvedItemState(
                 ResolvedItemAction.Handoff, detail, ownership, session, directedTarget);
         }
@@ -1707,11 +1766,15 @@ public sealed class WorkerService(
         {
             var target = ValidateHandoffTarget(
                 options, repositoryPath, id, session, pendingHandoff);
+            await EnsureAgentEnabledAsync(
+                target, options.Agent, id, "handoff", cancellationToken);
             return new ResolvedItemState(
                 ResolvedItemAction.Handoff, detail, ownership, session, target);
         }
 
         var agentName = ValidateRecordedSession(options, repositoryPath, id, session);
+        await EnsureAgentEnabledAsync(
+            agentName, options.Agent, id, "session", cancellationToken);
         return new ResolvedItemState(
             ownership.State == ClaimOwnershipState.OwnedByCurrent
                 ? ResolvedItemAction.ResumeActive
@@ -1745,7 +1808,10 @@ public sealed class WorkerService(
         if (target is null)
         {
             target = await SelectHandoffTargetAsync(
-                config.EffectiveWorker.EffectiveUsageFailure, source, cancellationToken);
+                config,
+                config.EffectiveWorker.EffectiveUsageFailure,
+                source,
+                cancellationToken);
             if (target is null)
                 throw new TrackerException(
                     "HANDOFF_TARGET_UNAVAILABLE",
@@ -1762,6 +1828,8 @@ public sealed class WorkerService(
                 "to start over.",
                 2);
         ValidateHandoffTargetCore(target, repositoryPath, detail.Id, session);
+        await EnsureAgentEnabledAsync(
+            target, options.Agent, detail.Id, "handoff", cancellationToken);
         return new ResolvedItemState(
             ResolvedItemAction.Handoff, detail, ownership, session, target);
     }
@@ -1971,9 +2039,7 @@ public sealed class WorkerService(
                 "CLAIM_TOKEN_REQUIRED",
                 $"Worker claim for '{launch.Detail.Id}' did not return a fencing token.",
                 6);
-        var handle = adapter.Agent == "claude"
-            ? SessionHandles.ForClaude(launch.Detail.Id, claimGeneration)
-            : SessionHandles.ForNamedVendor(launch.Detail.Id, claimGeneration);
+        var handle = adapter.CreateSessionHandle(launch.Detail.Id, claimGeneration);
         var claimContext = context with
         {
             SessionId = adapter.SupportsPreassignedHandle ? handle.Value : null,
@@ -2309,9 +2375,7 @@ public sealed class WorkerService(
             string claimantId,
             ClaimantKind kind)
     {
-        var handle = adapter.Agent == "claude"
-            ? SessionHandles.ForClaude(id, claimToken)
-            : SessionHandles.ForNamedVendor(id, claimToken);
+        var handle = adapter.CreateSessionHandle(id, claimToken);
         var context = new AgentExecutionContext(
             agentName,
             adapter.SupportsPreassignedHandle ? handle.Value : null,
@@ -3019,7 +3083,7 @@ public sealed class WorkerService(
             return WorkerItemDisposition.Fenced;
         }
 
-        var implementation = adapter.BuildResumeWithPrompt(
+        var implementation = RequireResumeAdapter(adapter).BuildResumeWithPrompt(
             new SessionHandle(sessionId),
             run.Workspace,
             continuation.ImplementationPermissions,
@@ -3526,7 +3590,7 @@ public sealed class WorkerService(
     /// and for a session whose context this launch could not resolve.
     /// </summary>
     private AgentInvocation BuildResumeInvocation(
-        IAgentAdapter adapter,
+        IAgentResumeAdapter adapter,
         TrackerConfig config,
         WorkItemDetail detail,
         string agentName,
@@ -3564,7 +3628,7 @@ public sealed class WorkerService(
         // agent to re-read the item for itself, and it is correct precisely because there is
         // nothing approved to hand over instead.
         return adapter.BuildResume(handle, workspace,
-            WorkerPrompt.Append(WorkerPrompt.ForResume(detail.Id, agentName), resumeAddendum),
+            WorkerPrompt.Append(WorkerPrompt.ForResume(detail.Id), resumeAddendum),
             permissions);
     }
 
@@ -4026,8 +4090,9 @@ public sealed class WorkerService(
         string? sessionId,
         bool workspaceRemoved) =>
         !workspaceRemoved && Directory.Exists(workspace.Path) &&
-        !string.IsNullOrWhiteSpace(sessionId)
-            ? adapter.BuildInteractiveCommand(new SessionHandle(sessionId), workspace)
+        !string.IsNullOrWhiteSpace(sessionId) &&
+        adapter is IAgentInteractiveAdapter interactive
+            ? interactive.BuildInteractiveCommand(new SessionHandle(sessionId), workspace)
             : null;
 
     private async Task<WorkerItemDisposition> HandleFailedRunAsync(
@@ -4505,7 +4570,7 @@ public sealed class WorkerService(
             // immediately when the operator chose action "handoff", or once same-agent retries are
             // exhausted when they opted in via allowCrossAgentHandoff.
             var (target, reason) = await ChooseSecondStageAsync(
-                policy, action, agentName, nextAttempt, cancellationToken);
+                config, policy, action, agentName, nextAttempt, cancellationToken);
             if (target is not null)
                 return await ScheduleHandoffAsync(
                     new HandoffSchedule(
@@ -4638,6 +4703,7 @@ public sealed class WorkerService(
     /// most the configured fallback count on top before the item needs attention.
     /// </summary>
     private async Task<(string? Target, string Reason)> ChooseSecondStageAsync(
+        TrackerConfig config,
         WorkerUsageFailureConfig policy,
         string action,
         string agentName,
@@ -4654,7 +4720,7 @@ public sealed class WorkerService(
             _ => false
         } && nextAttempt <= policy.MaxAttempts + fallbackCount;
         var target = handoffEligible
-            ? await SelectHandoffTargetAsync(policy, agentName, cancellationToken)
+            ? await SelectHandoffTargetAsync(config, policy, agentName, cancellationToken)
             : null;
         if (target is not null)
             return (target, "");
@@ -4692,12 +4758,14 @@ public sealed class WorkerService(
         ProviderCapacity? Provider);
 
     /// <summary>
-    /// The first configured fallback that could actually run: a supported, installed agent whose
-    /// provider circuit is closed. The item's preferred-agent metadata is deliberately not a
-    /// filter — fallbacks are recovery choices and do not rewrite the preference (plan 026), so a
-    /// pinned item hands off and the pin still governs the next fresh selection.
+    /// The first configured fallback that could actually run: a supported, detected, enabled agent
+    /// whose effective provider circuit (including repository simulation) is closed. The item's
+    /// preferred-agent metadata is deliberately not a filter — fallbacks are recovery choices and
+    /// do not rewrite the preference (plan 026), so a pinned item hands off and the pin still
+    /// governs the next fresh selection.
     /// </summary>
     private async Task<string?> SelectHandoffTargetAsync(
+        TrackerConfig config,
         WorkerUsageFailureConfig policy,
         string sourceAgent,
         CancellationToken cancellationToken)
@@ -4705,6 +4773,7 @@ public sealed class WorkerService(
         if (!policy.Fallbacks.TryGetValue(sourceAgent, out var fallbacks))
             return null;
         var snapshot = runtimes.Snapshot();
+        var settings = await LoadUserSettingsAsync(cancellationToken);
         foreach (var candidate in fallbacks)
         {
             var target = NormalizeAgent(candidate);
@@ -4713,7 +4782,11 @@ public sealed class WorkerService(
                 !adaptersByName.ContainsKey(target) ||
                 !snapshot.IsInstalled(target))
                 continue;
-            var availability = await providerCapacity.GetAsync(target, cancellationToken);
+            if (!settings.IsAgentEnabled(target, detected: true))
+                continue;
+            var availability = await simulatedCapacity.TryCreateAsync(
+                    config, target, now(), cancellationToken) ??
+                await providerCapacity.GetAsync(target, cancellationToken);
             if (ProviderProbeBlocked(availability, now()))
                 continue;
             return target;
@@ -4910,13 +4983,19 @@ public sealed class WorkerService(
                 .ProbeAsync(seed.WorkspacePath, cancellationToken);
         var export = seed.SourceSessionId is null
             ? SessionExportResult.NotAvailable("The source run recorded no session ID.")
-            : await AgentSessionExporters
-                .ForAgent(seed.SourceAgent, copilotSharesRoot: cachePaths?.CopilotSharesRoot)
+            : await ResolveSessionExporter(seed.SourceAgent)
                 .ExportAsync(seed.SourceSessionId, cancellationToken);
         return HandoffPacketBuilder.Build(new HandoffPacketRequest(
             seed.Detail.Id, seed.Detail.Title, seed.SourceAgent, seed.SourceSessionId,
             seed.TargetAgent, seed.LastRun, seed.Report, workspaceSummary, export, now()));
     }
+
+    private IAgentSessionExporter ResolveSessionExporter(string agent) =>
+        sessionExportersByAgent.GetValueOrDefault(agent) ??
+        new UnsupportedSessionExporter(
+            agent,
+            $"No session export surface is registered for agent '{agent}'; " +
+            "the handoff continues from the work item and workspace.");
 
     private async Task ReleaseAfterFailureAsync(
         TrackerConfig config,
@@ -5130,16 +5209,23 @@ public sealed class WorkerService(
     }
 
     private async Task<IReadOnlyDictionary<string, ProviderCapacity>> ProviderStatesAsync(
+        TrackerConfig config,
         CancellationToken cancellationToken)
     {
-        if (!providerCapacityEnabled)
-            return new Dictionary<string, ProviderCapacity>(
-                StringComparer.OrdinalIgnoreCase);
         var result = new Dictionary<string, ProviderCapacity>(
             StringComparer.OrdinalIgnoreCase);
         foreach (var agent in adaptersByName.Keys)
         {
-            var availability = await providerCapacity.GetAsync(agent, cancellationToken);
+            var simulated = await simulatedCapacity.TryCreateAsync(
+                config, agent, now(), cancellationToken);
+            if (simulated is not null)
+            {
+                result[agent] = simulated;
+                continue;
+            }
+            var availability = providerCapacityEnabled
+                ? await providerCapacity.GetAsync(agent, cancellationToken)
+                : null;
             if (availability is not null)
                 result[agent] = availability;
         }
@@ -5147,13 +5233,15 @@ public sealed class WorkerService(
     }
 
     private async Task<bool> IsProviderBlockedForFreshAsync(
+        TrackerConfig config,
         string agentName,
         WorkerCandidateDiagnostics diagnostics,
         CancellationToken cancellationToken)
     {
-        if (!providerCapacityEnabled)
-            return false;
-        var availability = await providerCapacity.GetAsync(agentName, cancellationToken);
+        var availability = await simulatedCapacity.TryCreateAsync(
+            config, agentName, now(), cancellationToken);
+        if (availability is null && providerCapacityEnabled)
+            availability = await providerCapacity.GetAsync(agentName, cancellationToken);
         if (availability is null ||
             availability.State == ProviderCapacityState.Available)
             return false;
@@ -5169,9 +5257,18 @@ public sealed class WorkerService(
         Func<WorkerEvent, Task> emit,
         CancellationToken cancellationToken)
     {
+        var current = now();
+        var simulated = await simulatedCapacity.TryCreateAsync(
+            config, agentName, current, cancellationToken);
+        if (simulated is not null)
+        {
+            if (simulated.State == ProviderCapacityState.Available)
+                return ProviderGate.AllowedWithoutProbe;
+            await emit(ProviderUnavailableEvent(simulated, itemId, workspace.Path));
+            return ProviderGate.Blocked;
+        }
         if (!providerCapacityEnabled)
             return ProviderGate.AllowedWithoutProbe;
-        var current = now();
         var availability = await providerCapacity.GetAsync(agentName, cancellationToken);
         if (availability is null ||
             availability.State == ProviderCapacityState.Available)
@@ -5390,8 +5487,9 @@ public sealed class WorkerService(
         foreach (var candidate in await QueuedCandidatesAsync(
                      config, options, repositoryPath, diagnostics, cancellationToken))
         {
-            var availability = await providerCapacity.GetAsync(
-                candidate.AgentName, cancellationToken);
+            var availability = await simulatedCapacity.TryCreateAsync(
+                    config, candidate.AgentName, now(), cancellationToken) ??
+                await providerCapacity.GetAsync(candidate.AgentName, cancellationToken);
             if (!ProviderProbeBlocked(availability, now()))
                 return candidate;
             if (availability is not null)
@@ -5412,6 +5510,7 @@ public sealed class WorkerService(
             config,
             new ListWorkItemsRequest(activeStatus, null),
             cancellationToken);
+        var settings = await LoadUserSettingsAsync(cancellationToken);
         var candidates = new List<QueuedCandidate>();
         foreach (var summary in summaries)
         {
@@ -5510,6 +5609,15 @@ public sealed class WorkerService(
                     directed ??
                     (dueLocalHandoff ? NormalizeAgent(dispatch!.Agent) : null) ??
                     NormalizeAgent(session.Agent) ?? "unknown");
+                continue;
+            }
+            if (!Settings.AgentEnablementPolicy.AllowsManagedWork(
+                    settings,
+                    agentName,
+                    options.Agent,
+                    detected: true))
+            {
+                diagnostics?.RecordDisabledAgent(agentName);
                 continue;
             }
             candidates.Add(new QueuedCandidate(
@@ -5812,11 +5920,11 @@ public sealed class WorkerService(
                 continue;
             }
 
-            var invocation = adapter.BuildResume(
+            var invocation = RequireResumeAdapter(adapter).BuildResume(
                 new SessionHandle(queued.Session.SessionId!),
                 workspace,
                 WorkerPrompt.Append(
-                    WorkerPrompt.ForResume(queued.Detail.Id, queued.AgentName),
+                    WorkerPrompt.ForResume(queued.Detail.Id),
                     WorkerPrompt.RunAddendum(
                         workspace, config.Worker?.Completion?.Commit)),
                 PermissionsFor(config, queued.AgentName));
@@ -5858,6 +5966,7 @@ public sealed class WorkerService(
         var readyAgents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var preview = new DryRunPreviewContext(
             config, options, repositoryPath, readyAgents, emit);
+        var agentSettings = await LoadUserSettingsAsync(cancellationToken);
         foreach (var summary in items)
         {
             var detail = await tracker.GetAsync(config, summary.Id, cancellationToken);
@@ -5865,6 +5974,7 @@ public sealed class WorkerService(
                 detail,
                 options,
                 config.EffectiveWorker.DefaultAgent,
+                agentSettings,
                 diagnostics);
             if (!evaluation.Eligible)
                 continue;
@@ -5908,9 +6018,7 @@ public sealed class WorkerService(
             skills.EnsureWorktreeReady(agent, preview.RepositoryPath);
         var adapter = adaptersByName[agent];
         var previewGeneration = $"dry-run:{Guid.NewGuid():N}";
-        var session = adapter.Agent == "claude"
-            ? SessionHandles.ForClaude(detail.Id, previewGeneration)
-            : SessionHandles.ForNamedVendor(detail.Id, previewGeneration);
+        var session = adapter.CreateSessionHandle(detail.Id, previewGeneration);
         var workspace = new Workspace(
             Path.GetFullPath(preview.RepositoryPath),
             preview.Options.WorkspaceMode == WorkspaceMode.Worktree);
@@ -5967,6 +6075,7 @@ public sealed class WorkerService(
         WorkItemDetail detail,
         WorkerOptions options,
         string? configuredAgent,
+        Settings.UserSettings agentSettings,
         WorkerCandidateDiagnostics diagnostics)
     {
         diagnostics.StatusItems++;
@@ -6003,6 +6112,19 @@ public sealed class WorkerService(
                         decision.AgentSource,
                         Unavailable: true);
                 }
+                if (!Settings.AgentEnablementPolicy.AllowsManagedWork(
+                    agentSettings,
+                    decision.Agent!,
+                    options.Agent,
+                    detected: true))
+                {
+                    diagnostics.RecordDisabledAgent(decision.Agent!);
+                    return new CandidateEvaluation(
+                        false,
+                        decision.Agent,
+                        decision.AgentSource,
+                        Disabled: true);
+                }
                 diagnostics.Eligible++;
                 return new CandidateEvaluation(
                     true,
@@ -6011,10 +6133,13 @@ public sealed class WorkerService(
         }
     }
 
-    private void EnsureWorkerHostAvailable(WorkerOptions options)
+    private async Task EnsureWorkerHostAvailableAsync(
+        WorkerOptions options,
+        CancellationToken cancellationToken)
     {
         var snapshot = runtimes.Snapshot();
-        if (NormalizeAgent(options.Agent) is { } selected &&
+        var selected = NormalizeAgent(options.Agent);
+        if (selected is not null &&
             adaptersByName.ContainsKey(selected) &&
             !snapshot.IsInstalled(selected))
         {
@@ -6032,7 +6157,67 @@ public sealed class WorkerService(
                     ["supportedAgents"] = snapshot.Agents.Select(runtime => runtime.Agent).ToArray()
                 });
         }
+        if (selected is not null)
+            return;
+
+        var settings = await LoadUserSettingsAsync(cancellationToken);
+        var enabled = snapshot.InstalledAgents
+            .Where(runtime => settings.IsAgentEnabled(runtime.Agent, detected: true))
+            .Select(runtime => runtime.Agent)
+            .ToArray();
+        if (enabled.Length == 0)
+        {
+            throw new TrackerException(
+                "NO_AGENT_ENABLED",
+                "No detected AI agent is enabled for Wrighty-managed work on this computer. " +
+                "Enable an agent in the web console Agents menu or choose an explicit " +
+                "--agent <vendor> override.",
+                7,
+                new Dictionary<string, object?>
+                {
+                    ["detectedAgents"] = snapshot.InstalledAgents
+                        .Select(runtime => runtime.Agent)
+                        .ToArray(),
+                    ["selectedAgents"] = settings.EnabledAgents
+                });
+        }
     }
+
+    private async Task EnsureAgentEnabledAsync(
+        string agent,
+        string? explicitlySelectedAgent,
+        WorkItemId? id,
+        string source,
+        CancellationToken cancellationToken)
+    {
+        var settings = await LoadUserSettingsAsync(cancellationToken);
+        if (Settings.AgentEnablementPolicy.AllowsManagedWork(
+                settings,
+                agent,
+                explicitlySelectedAgent,
+                detected: true))
+            return;
+        throw AgentDisabled(agent, id, source);
+    }
+
+    private static TrackerException AgentDisabled(
+        string agent,
+        WorkItemId? id,
+        string source) =>
+        new(
+            "AGENT_DISABLED",
+            id is null
+                ? $"Agent '{agent}' is disabled in your user settings. Enable it in the Agents " +
+                  "menu or choose an explicit --agent override."
+                : $"Resolved agent '{agent}' for work item '{id}' is disabled in your user " +
+                  "settings. Enable it in the Agents menu or choose an explicit --agent override.",
+            7,
+            new Dictionary<string, object?>
+            {
+                ["agent"] = agent,
+                ["itemId"] = id?.Value,
+                ["source"] = source
+            });
 
     private void EnsureAgentInstalled(string agent, WorkItemId? id, string source)
     {
@@ -6043,6 +6228,13 @@ public sealed class WorkerService(
 
     private void ThrowIfAgentUnavailable(CandidateEvaluation evaluation, WorkItemId id)
     {
+        if (evaluation.Disabled && evaluation.Agent is not null)
+        {
+            throw AgentDisabled(
+                evaluation.Agent,
+                id,
+                evaluation.AgentSource ?? "unknown");
+        }
         if (!evaluation.Unavailable || evaluation.Agent is null)
             return;
         throw AgentNotInstalled(
@@ -6079,6 +6271,12 @@ public sealed class WorkerService(
 
     private static string? NormalizeAgent(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
+
+    private Task<Settings.UserSettings> LoadUserSettingsAsync(
+        CancellationToken cancellationToken) =>
+        userSettings is null
+            ? Task.FromResult(new Settings.UserSettings())
+            : userSettings.LoadAsync(cancellationToken);
 
     private static ClaimantKind ParseClaimantKind(string value) => value.ToLowerInvariant() switch
     {
@@ -6125,7 +6323,8 @@ public sealed class WorkerService(
         bool Eligible,
         string? Agent = null,
         string? AgentSource = null,
-        bool Unavailable = false)
+        bool Unavailable = false,
+        bool Disabled = false)
     {
         public static CandidateEvaluation Ineligible { get; } = new(false);
     }
@@ -6234,9 +6433,12 @@ public sealed class WorkerService(
         public int Claimable { get; set; }
         public int ProviderUnavailable { get; private set; }
         public int UnavailableAgent { get; private set; }
+        public int DisabledAgent { get; private set; }
         public Dictionary<string, ProviderCapacity> UnavailableProviders { get; } =
             new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, int> UnavailableAgents { get; } =
+            new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, int> DisabledAgents { get; } =
             new(StringComparer.OrdinalIgnoreCase);
 
         public void RecordProviderUnavailable(ProviderCapacity availability)
@@ -6249,6 +6451,12 @@ public sealed class WorkerService(
         {
             UnavailableAgent++;
             UnavailableAgents[agent] = UnavailableAgents.GetValueOrDefault(agent) + 1;
+        }
+
+        public void RecordDisabledAgent(string agent)
+        {
+            DisabledAgent++;
+            DisabledAgents[agent] = DisabledAgents.GetValueOrDefault(agent) + 1;
         }
 
         public string UnavailableAgentSignature => string.Join(
@@ -6302,6 +6510,7 @@ public sealed class WorkerService(
                    filters +
                    $"{UnresolvedAgent} opted-in {Plural(UnresolvedAgent, "item")} without a supported resolved agent; " +
                    $"{UnavailableAgent} otherwise eligible {Plural(UnavailableAgent, "item")} with an unavailable local agent; " +
+                   $"{DisabledAgent} otherwise eligible {Plural(DisabledAgent, "item")} assigned to a disabled agent; " +
                    $"{ProviderUnavailable} otherwise eligible {Plural(ProviderUnavailable, "item")} blocked by provider capacity; " +
                    $"{contended} otherwise eligible " +
                    Plural(
@@ -6329,6 +6538,7 @@ public sealed class WorkerService(
                    filters +
                    $"{UnresolvedAgent} opted-in {Plural(UnresolvedAgent, "item")} without a supported resolved agent; " +
                    $"{UnavailableAgent} otherwise eligible {Plural(UnavailableAgent, "item")} with an unavailable local agent; " +
+                   $"{DisabledAgent} otherwise eligible {Plural(DisabledAgent, "item")} assigned to a disabled agent; " +
                    $"{ProviderUnavailable} otherwise eligible {Plural(ProviderUnavailable, "item")} blocked by provider capacity; " +
                    $"{Claimed} otherwise eligible {Plural(Claimed, "item")} currently claimed; " +
                    $"{Claimable} currently claimable. Candidates must be active in '{status}', " +
@@ -6351,6 +6561,7 @@ public sealed class WorkerService(
                    $"{PausedOrQueued} paused or explicitly queued {Plural(PausedOrQueued, "item")}; " +
                    $"{UnresolvedAgent} without a supported resolved agent; " +
                    $"{UnavailableAgent} with an unavailable local agent; " +
+                   $"{DisabledAgent} assigned to a disabled agent; " +
                    $"{ProviderUnavailable} blocked by provider capacity; " +
                    $"{Claimed} currently claimed{filters}). " +
                    $"Candidates must be active in '{status}', allow automatic execution, match every " +

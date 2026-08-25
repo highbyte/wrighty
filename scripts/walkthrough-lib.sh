@@ -84,20 +84,25 @@ confirm() {
 wt_resolve_agent() {
     ASSUME_AGENT=${1:-}
     if [[ -z "$ASSUME_AGENT" ]]; then
-        printf '\n%sWhich agent will you drive?%s [claude/codex/copilot] (default claude): ' \
+        printf '\n%sWhich agent will you drive?%s [claude/codex/copilot/opencode] (default claude): ' \
             "$C_BOLD" "$C_RESET"
         read -r ASSUME_AGENT
         [[ -z "$ASSUME_AGENT" ]] && ASSUME_AGENT="claude"
     fi
     case "$ASSUME_AGENT" in
-        claude | codex | copilot) ;;
-        *) die "unsupported agent '$ASSUME_AGENT' (use claude, codex, or copilot)" ;;
+        claude | codex | copilot | opencode) ;;
+        *) die "unsupported agent '$ASSUME_AGENT' (use claude, codex, copilot, or opencode)" ;;
     esac
 }
 
-# Codex invokes the skill with $wrighty; claude and copilot use /wrighty.
+# Codex invokes the skill with $wrighty; Claude and Copilot use /wrighty; OpenCode accepts a
+# natural-language skill request.
 skill_prefix() {
-    [[ "$ASSUME_AGENT" == "codex" ]] && printf '$wrighty' || printf '/wrighty'
+    case "$ASSUME_AGENT" in
+        codex) printf '$wrighty' ;;
+        opencode) printf 'Use the wrighty skill to' ;;
+        *) printf '/wrighty' ;;
+    esac
 }
 
 # wt_build_cli <cli-project> <cli-dll> <skip-build:true|false> <configuration>
@@ -116,13 +121,14 @@ wt_build_cli() {
 wr() { (cd "$FIXTURE_REPO" && dotnet "$CLI_DLL" "$@"); }
 
 # wt_install_and_commit_skill — install the real Wrighty skill for ASSUME_AGENT with the CLI's own
-# installer (claude -> .claude/skills, codex/copilot -> .agents/skills), then commit it so it is
+# installer (claude -> .claude/skills, codex/copilot/opencode -> .agents/skills), then commit it so it is
 # present at HEAD when the worker checks out a fresh worktree. Force-add the skill: a global ignore
 # of .claude/ or .agents/ (common in dotfiles) would otherwise silently exclude it and every
 # worktree scenario would fail the worker's skill-availability preflight. Sets SKILL_DIR.
 wt_install_and_commit_skill() {
     SKILL_DIR=".claude/skills/wrighty"
-    [[ "$ASSUME_AGENT" == "codex" || "$ASSUME_AGENT" == "copilot" ]] && SKILL_DIR=".agents/skills/wrighty"
+    [[ "$ASSUME_AGENT" == "codex" || "$ASSUME_AGENT" == "copilot" ||
+        "$ASSUME_AGENT" == "opencode" ]] && SKILL_DIR=".agents/skills/wrighty"
     if wr skill install --agent "$ASSUME_AGENT" --scope project --force >/dev/null 2>&1; then
         (cd "$FIXTURE_REPO" && git add -f "$SKILL_DIR" >/dev/null 2>&1 &&
             git commit -q -m "Install Wrighty skill for $ASSUME_AGENT" >/dev/null 2>&1) || true

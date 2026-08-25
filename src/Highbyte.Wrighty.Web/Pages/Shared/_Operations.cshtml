@@ -126,7 +126,7 @@
         <option value="">Any</option>
         @foreach (var agent in Model.AgentOptions)
         {
-          <option value="@agent" selected="@(string.Equals(query.Agent, agent, StringComparison.OrdinalIgnoreCase) ? "selected" : null)">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
+          <option value="@agent.Id" selected="@(string.Equals(query.Agent, agent.Id, StringComparison.OrdinalIgnoreCase) ? "selected" : null)">@agent.DisplayName</option>
         }
       </select>
     </label>

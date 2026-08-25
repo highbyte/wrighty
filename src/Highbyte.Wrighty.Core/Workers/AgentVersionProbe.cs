@@ -24,10 +24,16 @@ public interface IAgentVersionProbe
 /// </summary>
 public sealed class AgentVersionProbe(
     IExecutableResolver executables,
-    TimeSpan? timeout = null) : IAgentVersionProbe
+    TimeSpan? timeout = null,
+    AgentRegistry? registry = null) : IAgentVersionProbe
 {
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(5);
     private readonly ConcurrentDictionary<string, string?> cache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly IReadOnlyDictionary<string, string> executableByAgent =
+        (registry?.Descriptors ?? BuiltInAgentRegistry.Descriptors).ToDictionary(
+            descriptor => descriptor.Id,
+            descriptor => descriptor.ExecutableName,
+            StringComparer.OrdinalIgnoreCase);
 
     public async Task<string?> TryGetVersionAsync(string agent, CancellationToken cancellationToken)
     {
@@ -45,7 +51,9 @@ public sealed class AgentVersionProbe(
 
     private async Task<string?> ReadAsync(string agent, CancellationToken cancellationToken)
     {
-        if (!executables.TryResolve(agent, out var path) || path is null)
+        if (!executableByAgent.TryGetValue(agent, out var executable) ||
+            !executables.TryResolve(executable, out var path) ||
+            path is null)
         {
             return null;
         }

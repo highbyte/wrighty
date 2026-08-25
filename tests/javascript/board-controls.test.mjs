@@ -8,6 +8,7 @@ import {
   syncSortDirectionButton,
   toggleSortDirection,
   dismissBoardFilterMenu,
+  dismissHeaderPopovers,
   syncBoardFilterIndicator,
   clearBoardFilters,
   resetBoardView,
@@ -139,6 +140,65 @@ test("filter menu closes on an outside click but remains open for its fields", (
   assert.equal(menu.open, true);
   assert.equal(dismissBoardFilterMenu(menu, outside), true);
   assert.equal(menu.open, false);
+});
+
+test("Agents popover closes outside while retaining a click within it", () => {
+  const agentsTarget = {};
+  const outside = {};
+  const agents = {
+    open: true,
+    contains: target => target === agentsTarget
+  };
+  const doc = {
+    querySelectorAll: selector => {
+      assert.equal(selector, ".agents-menu[open]");
+      return [agents].filter(menu => menu.open);
+    }
+  };
+
+  assert.equal(dismissHeaderPopovers(doc, agentsTarget), 0);
+  assert.equal(agents.open, true);
+  assert.equal(dismissHeaderPopovers(doc, outside), 1);
+  assert.equal(agents.open, false);
+  assert.equal(dismissHeaderPopovers(doc, outside), 0);
+  assert.equal(dismissHeaderPopovers(null, outside), 0);
+  assert.equal(dismissHeaderPopovers(doc, null), 0);
+});
+
+test("confirmation dialog clicks retain the underlying header popover", () => {
+  const target = {
+    closest: selector => selector === "dialog" ? {} : null
+  };
+  const agents = {
+    open: true,
+    contains: () => false
+  };
+  const doc = {
+    querySelectorAll: () => [agents]
+  };
+
+  assert.equal(dismissHeaderPopovers(doc, target), 0);
+  assert.equal(agents.open, true);
+});
+
+test("a click from a replaced header menu does not close its replacement", () => {
+  const sourceAgents = {
+    classList: { contains: name => name === "agents-menu" }
+  };
+  const target = {
+    closest: selector => selector.includes(".agents-menu") ? sourceAgents : null
+  };
+  const replacementAgents = {
+    classList: { contains: name => name === "agents-menu" },
+    open: true,
+    contains: () => false
+  };
+  const doc = {
+    querySelectorAll: () => [replacementAgents]
+  };
+
+  assert.equal(dismissHeaderPopovers(doc, target), 0);
+  assert.equal(replacementAgents.open, true);
 });
 
 test("Board clear all empties only structured filters", () => {

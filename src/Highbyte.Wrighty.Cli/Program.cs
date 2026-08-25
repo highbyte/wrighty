@@ -37,23 +37,31 @@ internal static class Program
         INodeIdCache cache = new JsonNodeIdCache(paths);
         IInstallationIdentityProvider identity = new InstallationIdentityProvider(paths);
         IClock clock = new SystemClock();
-        ITrackerConfigStore configStore = new TrackerConfigLoader();
+        IExecutableResolver executableResolver = new PathExecutableResolver();
+        var agentRegistry = BuiltInAgentRegistry.Create(
+            executableResolver,
+            copilotSharesRoot: paths.CopilotSharesRoot);
+        var skillManager = SkillManager.CreateDefault(agentRegistry.Descriptors);
+        var skillMaintenance = new WebSkillMaintenance(
+            skillManager,
+            agentRegistry.Descriptors);
+        ITrackerConfigStore configStore = new TrackerConfigLoader(agentRegistry: agentRegistry);
         ITrackerConfigLoader configLoader = configStore;
         IRepositoryConfigurationService repositoryConfiguration =
-            new RepositoryConfigurationService(configStore);
-        IExecutableResolver executableResolver = new PathExecutableResolver();
-        IAgentAdapter[] agentAdapters =
-            [new ClaudeAgentAdapter(), new CodexAgentAdapter(),
-             new CopilotAgentAdapter(shareDirectory: paths.CopilotSharesRoot)];
+            new RepositoryConfigurationService(configStore, agentRegistry);
+        var agentAdapters = agentRegistry.ExecutionAdapters;
         IAgentRuntimeCatalog physicalAgentRuntimes =
-            new AgentRuntimeCatalog(agentAdapters, executableResolver);
+            new AgentRuntimeCatalog(agentRegistry, executableResolver);
         IAgentRuntimeCatalog agentRuntimes = new TestingAgentRuntimeCatalog(
-            physicalAgentRuntimes, configStore, Environment.CurrentDirectory);
+            physicalAgentRuntimes,
+            configStore,
+            Environment.CurrentDirectory,
+            agentRegistry);
         ILocalAgentSessionLauncher localAgentLauncher =
-            new LocalAgentSessionLauncher(executableResolver);
+            new LocalAgentSessionLauncher(executableResolver, agentRegistry);
         IGhProcess process = new GhProcess(executableResolver);
         var api = new GhApi(process);
-        IProjectClient projects = new GitHubProjectClient(api, cache);
+        IProjectClient projects = new GitHubProjectClient(api, cache, agentRegistry.Descriptors);
         var git = new GitProcess(executableResolver);
         IRepositoryDiscovery repositoryDiscovery = new GitRepositoryDiscovery(git);
         IGitHubInitializationClient githubInitialization = new GitHubInitializationClient(api);
@@ -65,22 +73,27 @@ internal static class Program
             api,
             projects,
             githubResolver,
-            mutationGuard: mutationGuard);
+            mutationGuard: mutationGuard,
+            agentRegistry: agentRegistry);
         ITrackerBackend githubBackend = new GitHubTrackerBackend(
             projects,
             claims,
             githubResolver,
             backend);
-        ITrackerBackend localBackend = new LocalMarkdownTrackerBackend(identity, clock);
+        ITrackerBackend localBackend = new LocalMarkdownTrackerBackend(
+            identity,
+            clock,
+            agentRegistry: agentRegistry);
         var backendRegistry = new TrackerBackendRegistry(
             [githubBackend, localBackend]);
-        var tracker = new TrackerService(backendRegistry);
+        var tracker = new TrackerService(backendRegistry, agentRegistry);
         var initialization = new TrackerInitializationService(
             configStore,
             repositoryDiscovery,
             githubInitialization,
             projects,
-            backendRegistry);
+            backendRegistry,
+            agentRegistry);
         IProviderCapacityStore providerCapacity =
             new JsonProviderCapacityStore(paths);
         IWorkerInstanceRegistry workerInstances =
@@ -133,7 +146,9 @@ internal static class Program
             agentAdapters,
             executables: executableResolver,
             workspaceExecutionLock: new FileWorkspaceExecutionLock(),
-            skillAvailability: new FileWorkerSkillAvailability(executableResolver),
+            skillAvailability: new FileWorkerSkillAvailability(
+                executableResolver,
+                registry: agentRegistry),
             hostLabelProvider: hostLabel,
             providerCapacityStore: providerCapacity,
             launchPreflightChecks: [contextLaunchCheck],
@@ -145,17 +160,20 @@ internal static class Program
                 controlReactionProviders: controlReactionProviders),
             cachePaths: paths,
             userSettings: userSettings,
-            agentVersions: new AgentVersionProbe(executableResolver),
-            failureSimulator: new RepositoryConfigurationAgentFailureSimulator(configStore));
+            agentVersions: new AgentVersionProbe(executableResolver, registry: agentRegistry),
+            failureSimulator: new RepositoryConfigurationAgentFailureSimulator(configStore),
+            capacitySimulator: new RepositoryConfigurationProviderCapacitySimulator(configStore),
+            agentRegistry: agentRegistry);
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
             Environment.GetEnvironmentVariables()
                 .Cast<DictionaryEntry>()
                 .ToDictionary(
                     entry => (string)entry.Key,
                     entry => entry.Value?.ToString(),
-                    StringComparer.Ordinal));
+                    StringComparer.Ordinal),
+            agentRegistry);
         var modelDiscoveries = new Highbyte.Wrighty.Workers.AgentModelDiscoveries(
-            executableResolver, agentRuntimes);
+            agentRegistry, agentRuntimes);
         IWrightyWebServer webServer = new WrightyWebServer(
             configLoader,
             tracker,
@@ -165,7 +183,7 @@ internal static class Program
                 new GitWorkspaceInventory(executableResolver),
                 providerCapacity,
                 worker,
-                agentAdapters,
+                null,
                 agentRuntimes,
                 localAgentLauncher,
                 repositoryConfiguration,
@@ -175,13 +193,15 @@ internal static class Program
                 modelDiscoveries,
                 storageLocations,
                 new GitHubProjectUrlResolver(githubInitialization.GetProjectAsync),
-                worker));
+                worker,
+                AgentRegistry: agentRegistry,
+                SkillMaintenance: skillMaintenance));
         var application = new CliApplication(
             configLoader,
             initialization,
             tracker,
             agentContext,
-            SkillManager.CreateDefault(),
+            skillManager,
             webServer,
             Console.In,
             Console.Out,
@@ -202,7 +222,9 @@ internal static class Program
             workerInstanceRegistry: workerInstances,
             contextApprovalService: contextApproval,
             modelDiscoveries: modelDiscoveries,
-            storageLocationCatalog: storageLocations);
+            storageLocationCatalog: storageLocations,
+            agentRegistry: agentRegistry,
+            skillMaintenance: skillMaintenance);
 
         using var shutdown = ShutdownSignals.Register();
         return await application.InvokeAsync(args, shutdown.Token);

@@ -28,10 +28,10 @@ authoritative procedures in this guide and the reference pages rather than repea
 | Goal | Start with | Switch to the other surface when |
 | --- | --- | --- |
 | Inspect and organize the backlog | `wrighty list`, `wrighty get`, or `wrighty web` | You want compact/JSON output, or a visual board and Markdown preview |
-| Collaboratively define a feature | Claude, Codex, or Copilot with the Wrighty skill | The item exists and you want visual editing or backlog placement |
+| Collaboratively define a feature | Claude, Codex, Copilot, or OpenCode with the Wrighty skill | The item exists and you want visual editing or backlog placement |
 | Give one item to an unattended agent | `wrighty worker --once` | You want to monitor state, edit requirements, take over, or archive |
 | Process eligible work continuously | `wrighty worker` or **Start worker** in the web console | An item needs human attention or backlog eligibility needs editing |
-| Let an interactive agent choose work | Start Claude, Codex, or Copilot with the Wrighty skill | You want to inspect or take over the claimed item |
+| Let an interactive agent choose work | Start Claude, Codex, Copilot, or OpenCode with the Wrighty skill | You want to inspect or take over the claimed item |
 | Clarify a paused agent item | `wrighty edit ID --takeover` or **Take over for editing** | You prefer terminal editing or the web console form |
 
 ## Inspect and organize work
@@ -87,7 +87,7 @@ flowchart LR
     Refine --> Dispatch["Human or autonomous execution"]
 ```
 
-### Claude, Codex, or Copilot
+### Claude, Codex, Copilot, or OpenCode
 
 Start a supported vendor surface with access to the project-scoped or user-scoped Wrighty skill,
 the project, and the local Wrighty CLI. Invoke the skill using the form supported by that surface:
@@ -127,7 +127,7 @@ After creation or a substantial clarification, the agent should not collapse the
 | Choice | What happens |
 | --- | --- |
 | Start implementation in this session | The current agent claims or retains the item and implements it directly. No worker or second vendor process starts. |
-| Mark for automatic processing | The agent enables execution policy, asks whether to use the configured `worker.defaultAgent` or pin Claude, Codex, or Copilot, then releases its editing claim. A separately running worker can pick it. |
+| Mark for automatic processing | The agent enables execution policy, asks whether to use the configured `worker.defaultAgent` or pin Claude, Codex, Copilot, or OpenCode, then releases its editing claim. A separately running worker can pick it. |
 | Do nothing for now | The item remains tracked and unscheduled. The agent explains how to return in the same conversation or use the web console/worker later. |
 
 `wrighty init --check --json` exposes the configured default as

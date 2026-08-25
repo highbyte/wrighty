@@ -8,9 +8,9 @@ namespace Highbyte.Wrighty.Workers;
 ///
 /// The union is not uniform, and vendor-level is not the real granularity: a codex capability query
 /// on 2026-08-08 showed effort support varies **per model** — <c>gpt-5.6-sol</c> accepts
-/// <c>ultra</c> while <c>gpt-5.4</c> stops at <c>xhigh</c>. Wrighty cannot enumerate models yet, so
-/// <see cref="AgentExecutionCapability.SupportedEfforts"/> is a permissive gate rather than a
-/// guarantee: it catches values the vendor could never accept, and lets the vendor reject the rest.
+/// <c>ultra</c> while <c>gpt-5.4</c> stops at <c>xhigh</c>. Model discovery refines this where the
+/// vendor answers; <see cref="AgentExecutionCapability.SupportedEfforts"/> remains the permissive
+/// early gate used when discovery is unavailable.
 /// </summary>
 public enum ExecutionEffort
 {
@@ -85,8 +85,9 @@ public static class ExecutionEfforts
 /// <param name="SupportedEfforts">
 /// The effort levels Wrighty will pass to this vendor without further checking. Deliberately a
 /// permissive gate, not a guarantee: real support is a property of the chosen *model*, which
-/// Wrighty cannot enumerate yet. A level outside this set could never work and is rejected early;
-/// a level inside it may still be refused by the vendor for the specific model. Empty means the
+/// Wrighty may not be able to enumerate at validation time. A level outside this set could never
+/// work and is rejected early; a level inside it may still be refused by the vendor for the
+/// specific model. Empty means the
 /// vendor exposes no effort control at all, and configuring one is invalid rather than ignored.
 /// </param>
 public sealed record AgentExecutionCapability(
@@ -101,19 +102,19 @@ public sealed record AgentExecutionCapability(
 
 /// <summary>
 /// Resolves an agent name to its capability without needing an adapter instance in hand, for
-/// callers such as the config commands that validate a mapping long before any launch. Mirrors
-/// <see cref="AgentSessionExporters.ForAgent"/>; the adapters remain the single source of truth.
+/// callers such as the config commands that validate a mapping long before any launch. The
+/// registry owns the adapter set; adapters remain the source of execution-specific detail.
 /// </summary>
 public static class AgentExecutionCapabilities
 {
+    private static readonly Lazy<AgentRegistry> BuiltIns = new(() =>
+        BuiltInAgentRegistry.Create(new Processes.PathExecutableResolver()));
+
     public static AgentExecutionCapability? ForAgent(string? agent) =>
-        agent?.Trim().ToLowerInvariant() switch
-        {
-            "claude" => new ClaudeAgentAdapter().DescribeExecutionCapability(),
-            "codex" => new CodexAgentAdapter().DescribeExecutionCapability(),
-            "copilot" => new CopilotAgentAdapter().DescribeExecutionCapability(),
-            _ => null
-        };
+        ForAgent(agent, BuiltIns.Value);
+
+    public static AgentExecutionCapability? ForAgent(string? agent, AgentRegistry registry) =>
+        registry.Find(agent)?.ExecutionAdapter?.DescribeExecutionCapability();
 }
 
 /// <summary>
@@ -190,6 +191,32 @@ public static class ExecutionSelectionArguments
         {
             arguments.Add("-c");
             arguments.Add($"model_reasoning_effort={effort.ToToken()}");
+        }
+
+        return arguments;
+    }
+
+    /// <summary>
+    /// OpenCode selects a provider-qualified model and a model-specific variant. Wrighty's effort
+    /// vocabulary maps to variant names only after discovery has confirmed the selected model
+    /// exposes that name.
+    /// </summary>
+    public static IReadOnlyList<string> ForOpenCode(ExecutionSelection? selection)
+    {
+        if (selection is null)
+            return [];
+
+        var arguments = new List<string>(4);
+        if (selection.Model is { } model)
+        {
+            arguments.Add("--model");
+            arguments.Add(model);
+        }
+
+        if (selection.Effort is { } effort)
+        {
+            arguments.Add("--variant");
+            arguments.Add(effort.ToToken());
         }
 
         return arguments;

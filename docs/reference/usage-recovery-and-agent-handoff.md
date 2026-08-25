@@ -125,12 +125,14 @@ What it is not: a cross-vendor session resume. There is no such thing. Vendors c
 other's native sessions, and Wrighty does not pretend otherwise — the target starts fresh and is
 told what happened.
 
-Target selection filters the configured fallbacks by what is actually installed and not behind an
-open circuit, so a handoff never targets an agent that is itself exhausted. The target runs under
-its **own permission profile**, not the source's. The replaced source address is retained as session
-lineage, so the chain remains inspectable. Total automatic recovery is bounded: same-agent retries
-consume `maxAttempts`, and handoffs may add at most the configured fallback count on top before the
-item moves to `needs-attention`.
+Target selection filters the configured fallbacks by what is supported, detected, enabled in the
+user settings, and not behind an open capacity circuit. Repository capacity simulations participate
+in this decision too, so the worker, CLI, and web console make the same local test decision. A
+handoff therefore never targets an agent that is disabled, missing, or itself exhausted. The target
+runs under its **own permission profile**, not the source's. The replaced source address is retained
+as session lineage, so the chain remains inspectable. Total automatic recovery is bounded:
+same-agent retries consume `maxAttempts`, and handoffs may add at most the configured fallback count
+on top before the item moves to `needs-attention`.
 
 Handoff has two triggers beyond the automatic usage-failure path, because running out of quota is
 not the only reason to change agent:
@@ -254,6 +256,11 @@ Provider circuits are keyed by installation cache plus normalized agent type, be
 CLIs expose no safe, non-secret account-scope key. The practical consequence: a circuit describes
 *this installation's* view of capacity. Another machine sharing the same subscription will discover
 exhaustion independently rather than inheriting it.
+
+OpenCode can route different provider-qualified models through one agent executable. Until Wrighty
+has a safe capacity identity below the agent level, an OpenCode usage failure opens the circuit for
+OpenCode as a whole and an explicit probe tests its configured default model. Configure OpenCode
+fallbacks deliberately; Wrighty does not add them to the shipped fallback graph.
 
 ## Limitations
 

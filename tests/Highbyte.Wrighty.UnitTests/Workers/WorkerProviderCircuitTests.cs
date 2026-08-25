@@ -368,6 +368,125 @@ public sealed class WorkerProviderCircuitTests : IDisposable
     }
 
     [Fact]
+    public async Task Simulated_explicit_probe_does_not_spawn_or_change_the_shared_store()
+    {
+        var (backend, config, _) = await CreateItemAsync("Simulated provider probe");
+        var providerStore = Store();
+        await providerStore.RecordAvailableAsync(
+            "claude", clock.UtcNow, CancellationToken.None);
+        var simulated = new ProviderCapacity(
+            "claude",
+            ProviderCapacityState.UnavailableUntil,
+            "Wrighty simulated usage exhausted capacity for claude.",
+            clock.UtcNow.AddMinutes(5),
+            AgentFailureConfidence.Authoritative,
+            1,
+            clock.UtcNow,
+            Simulated: true);
+        var runner = new FailIfRunRunner();
+
+        var availability = await Worker(
+                backend,
+                runner,
+                config,
+                providerStore,
+                capacitySimulator: new FixedCapacitySimulator(simulated))
+            .ProbeProviderAsync(
+                config,
+                "claude",
+                directory,
+                _ => Task.CompletedTask,
+                CancellationToken.None);
+
+        Assert.True(availability.Simulated);
+        Assert.Equal(ProviderCapacityState.UnavailableUntil, availability.State);
+        Assert.Equal(0, runner.Calls);
+        var stored = await providerStore.GetAsync("claude", CancellationToken.None);
+        Assert.NotNull(stored);
+        Assert.False(stored.Simulated);
+        Assert.Equal(ProviderCapacityState.Available, stored.State);
+    }
+
+    [Fact]
+    public async Task Simulated_unavailable_capacity_blocks_fresh_work_without_claim_or_spawn()
+    {
+        var (backend, config, created) = await CreateItemAsync("Simulated blocked work");
+        var providerStore = Store();
+        var runner = new FailIfRunRunner();
+        var simulated = new ProviderCapacity(
+            "claude",
+            ProviderCapacityState.UnavailableUntil,
+            "Wrighty simulated rate limited capacity for claude.",
+            clock.UtcNow.AddMinutes(5),
+            AgentFailureConfidence.Authoritative,
+            1,
+            clock.UtcNow,
+            Simulated: true);
+
+        var summary = await Worker(
+                backend,
+                runner,
+                config,
+                providerStore,
+                capacitySimulator: new FixedCapacitySimulator(simulated))
+            .RunAsync(
+                config,
+                Options(),
+                directory,
+                _ => Task.CompletedTask,
+                CancellationToken.None);
+
+        Assert.Equal(new WorkerRunSummary(0), summary);
+        Assert.Equal(0, runner.Calls);
+        Assert.Equal(
+            ClaimOwnershipState.Unclaimed,
+            (await backend.GetClaimOwnershipAsync(
+                config, created, CancellationToken.None)).State);
+        Assert.Null(await providerStore.GetAsync("claude", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Simulated_available_capacity_overrides_a_shared_unavailable_state_for_this_repository()
+    {
+        var (backend, config, _) = await CreateItemAsync("Simulated available capacity");
+        var providerStore = Store();
+        await providerStore.RecordUnavailableAsync(
+            "claude",
+            "Usage limit reached.",
+            clock.UtcNow.AddHours(2),
+            AgentFailureConfidence.Authoritative,
+            clock.UtcNow,
+            CancellationToken.None);
+        var simulated = new ProviderCapacity(
+            "claude",
+            ProviderCapacityState.Available,
+            "Wrighty simulated available capacity for claude.",
+            null,
+            AgentFailureConfidence.Authoritative,
+            0,
+            clock.UtcNow,
+            Simulated: true);
+
+        var ready = await Worker(
+                backend,
+                new FailIfRunRunner(),
+                config,
+                providerStore,
+                capacitySimulator: new FixedCapacitySimulator(simulated))
+            .PreflightAsync(
+                config,
+                Options(),
+                directory,
+                _ => Task.CompletedTask,
+                CancellationToken.None);
+
+        Assert.True(ready);
+        Assert.Equal(
+            ProviderCapacityState.UnavailableUntil,
+            (await providerStore.GetAsync("claude", CancellationToken.None))?.State);
+    }
+
+    [Fact]
     public async Task Explicit_provider_probe_opens_circuit_when_available_provider_is_exhausted()
     {
         var (backend, config, _) = await CreateItemAsync("Discover exhausted provider");
@@ -497,7 +616,8 @@ public sealed class WorkerProviderCircuitTests : IDisposable
         IAgentProcessRunner runner,
         TrackerConfig config,
         IProviderCapacityStore providerStore,
-        IEnumerable<IAgentCapacityProbe>? capacityProbes = null) =>
+        IEnumerable<IAgentCapacityProbe>? capacityProbes = null,
+        IProviderCapacitySimulator? capacitySimulator = null) =>
         new(
             new TrackerService(new TrackerBackendRegistry([backend])),
             runner,
@@ -505,7 +625,8 @@ public sealed class WorkerProviderCircuitTests : IDisposable
             [new ClaudeAgentAdapter()],
             clock: () => clock.UtcNow,
             providerCapacityStore: providerStore,
-            capacityProbes: capacityProbes);
+            capacityProbes: capacityProbes,
+            capacitySimulator: capacitySimulator);
 
     private async Task<(LocalMarkdownTrackerBackend Backend, TrackerConfig Config,
         WorkItemId Created)> CreateItemAsync(string title)
@@ -692,5 +813,20 @@ public sealed class WorkerProviderCircuitTests : IDisposable
             return Task.FromResult<AgentCapacityProbeResult?>(
                 new AgentCapacityProbeResult(false, failure, observedAt));
         }
+    }
+
+    private sealed class FixedCapacitySimulator(ProviderCapacity capacity)
+        : IProviderCapacitySimulator
+    {
+        public Task<ProviderCapacity?> TryCreateAsync(
+            TrackerConfig config,
+            string agent,
+            DateTimeOffset observedAt,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<ProviderCapacity?>(capacity with
+            {
+                Agent = agent,
+                UpdatedAt = observedAt
+            });
     }
 }

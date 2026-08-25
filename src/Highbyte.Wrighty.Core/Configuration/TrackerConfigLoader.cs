@@ -9,7 +9,9 @@ using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.Configuration;
 
-public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverride = null) : ITrackerConfigStore
+public sealed partial class TrackerConfigLoader(
+    Func<string?>? configPathOverride = null,
+    AgentRegistry? agentRegistry = null) : ITrackerConfigStore
 {
     public const string FileName = ".wrighty.json";
     public const string ConfigPathEnvironmentVariable = "WRIGHTY_CONFIG_PATH";
@@ -22,6 +24,8 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         AllowTrailingCommas = true,
         UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow
     };
+    private readonly IReadOnlyList<string> supportedAgentIds =
+        agentRegistry?.WorkerIds ?? BuiltInAgentRegistry.Ids;
 
     public async Task<TrackerConfig> LoadAsync(
         string startDirectory,
@@ -101,7 +105,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         try
         {
             var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
-            return DeserializeExact(bytes, path);
+            return DeserializeExact(bytes, path, supportedAgentIds);
         }
         catch (TrackerException exception) when (exception.Code == "CONFIG_INVALID")
         {
@@ -133,7 +137,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         CancellationToken cancellationToken)
     {
         config = NormalizeForPersistence(config, path);
-        Validate(config);
+        Validate(config, supportedAgentIds);
         var fullPath = Path.GetFullPath(path);
         var directory = Path.GetDirectoryName(fullPath)!;
         var temporaryPath = Path.Combine(
@@ -211,7 +215,8 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
 
     internal static TrackerConfig DeserializeExact(
         ReadOnlySpan<byte> bytes,
-        string sourcePath)
+        string sourcePath,
+        IReadOnlyList<string>? supportedAgentIds = null)
     {
         var config = JsonSerializer.Deserialize<TrackerConfig>(bytes, JsonOptions);
         if (config is null)
@@ -221,7 +226,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             SourcePath = sourcePath,
             SourceRevision = Revision(bytes)
         };
-        Validate(config);
+        Validate(config, supportedAgentIds);
         return config;
     }
 
@@ -240,8 +245,11 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
                 SourcePath = path
             };
 
-    internal static void Validate(TrackerConfig config)
+    internal static void Validate(
+        TrackerConfig config,
+        IReadOnlyList<string>? supportedAgentIds = null)
     {
+        supportedAgentIds ??= BuiltInAgentRegistry.Ids;
         if (config.SchemaVersion is <= 0)
         {
             throw new TrackerException(
@@ -265,7 +273,7 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
 
         if (string.Equals(config.Backend, "local-markdown", StringComparison.OrdinalIgnoreCase))
         {
-            ValidateLocalMarkdown(config);
+            ValidateLocalMarkdown(config, supportedAgentIds);
             return;
         }
 
@@ -277,12 +285,14 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
                 3);
         }
 
-        ValidateGitHub(config);
+        ValidateGitHub(config, supportedAgentIds);
     }
 
-    private static void ValidateLocalMarkdown(TrackerConfig config)
+    private static void ValidateLocalMarkdown(
+        TrackerConfig config,
+        IReadOnlyList<string> supportedAgentIds)
     {
-        ValidateCommon(config);
+        ValidateCommon(config, supportedAgentIds);
         if (config.GitHub is not null)
         {
             throw new TrackerException(
@@ -373,9 +383,11 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         }
     }
 
-    private static void ValidateGitHub(TrackerConfig config)
+    private static void ValidateGitHub(
+        TrackerConfig config,
+        IReadOnlyList<string> supportedAgentIds)
     {
-        ValidateCommon(config);
+        ValidateCommon(config, supportedAgentIds);
 
         if (config.LocalMarkdown is not null)
         {
@@ -540,7 +552,9 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         }
     }
 
-    private static void ValidateCommon(TrackerConfig config)
+    private static void ValidateCommon(
+        TrackerConfig config,
+        IReadOnlyList<string> supportedAgentIds)
     {
         if (config.LeaseMinutes is < 5 or > 1440)
         {
@@ -590,8 +604,8 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
             WorkerRequirementsAssessmentConfig.Modes.Inline,
             WorkerRequirementsAssessmentConfig.Modes.Off);
         ValidateChoice(config.Worker?.DefaultAgent,
-            "worker.defaultAgent must be claude, codex, or copilot.",
-            "claude", "codex", "copilot");
+            $"worker.defaultAgent must be {AgentRegistry.FormatIds(supportedAgentIds)}.",
+            [.. supportedAgentIds]);
         ValidateChoice(config.Worker?.Completion?.Commit,
             "worker.completion.commit must be inspect or agent.",
             "inspect", "agent");
@@ -607,10 +621,11 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         ValidateChoice(config.Worker?.DesktopSessions?.Claude,
             "worker.desktopSessions.claude must be off or experimental.",
             "off", "experimental");
-        ValidateAgentOverrides(config.Worker?.Agents);
-        ValidateNotInstalledAgents(config.Testing?.NotInstalledAgents);
-        ValidateFailureSimulations(config.Testing?.AgentFailures);
-        ValidateUsageFailure(config.Worker?.UsageFailure);
+        ValidateAgentOverrides(config.Worker?.Agents, supportedAgentIds);
+        ValidateNotInstalledAgents(config.Testing?.NotInstalledAgents, supportedAgentIds);
+        ValidateFailureSimulations(config.Testing?.AgentFailures, supportedAgentIds);
+        ValidateCapacityProbeSimulations(config.Testing?.CapacityProbes, supportedAgentIds);
+        ValidateUsageFailure(config.Worker?.UsageFailure, supportedAgentIds);
         ValidateContextLimits(config.Worker?.Context);
         ValidateSessionReportMode(config.Worker?.SessionReportMode);
 
@@ -623,13 +638,14 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
     }
 
     private static void ValidateAgentOverrides(
-        IReadOnlyDictionary<string, WorkerAgentConfig>? agents)
+        IReadOnlyDictionary<string, WorkerAgentConfig>? agents,
+        IReadOnlyList<string> supportedAgentIds)
     {
         if (agents is null)
             return;
         foreach (var (agent, settings) in agents)
         {
-            if (agent.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+            if (!IsAgentSupported(supportedAgentIds, agent))
                 throw new TrackerException(
                     "CONFIG_INVALID",
                     $"worker.agents contains unsupported agent '{agent}'.",
@@ -641,13 +657,14 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
     }
 
     private static void ValidateFailureSimulations(
-        IReadOnlyDictionary<string, AgentFailureSimulation>? simulations)
+        IReadOnlyDictionary<string, AgentFailureSimulation>? simulations,
+        IReadOnlyList<string> supportedAgentIds)
     {
         if (simulations is null)
             return;
         foreach (var (agent, simulation) in simulations)
         {
-            if (agent.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+            if (!IsAgentSupported(supportedAgentIds, agent))
                 throw new TrackerException(
                     "CONFIG_INVALID",
                     $"testing.agentFailures contains unsupported agent '{agent}'.",
@@ -666,7 +683,36 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
         }
     }
 
-    private static void ValidateNotInstalledAgents(IReadOnlyList<string>? agents)
+    private static void ValidateCapacityProbeSimulations(
+        IReadOnlyDictionary<string, ProviderCapacitySimulation>? simulations,
+        IReadOnlyList<string> supportedAgentIds)
+    {
+        if (simulations is null)
+            return;
+        foreach (var (agent, simulation) in simulations)
+        {
+            if (!IsAgentSupported(supportedAgentIds, agent))
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"testing.capacityProbes contains unsupported agent '{agent}'.",
+                    3);
+            if (ProviderCapacitySimulationResults.Find(simulation.Result) is null)
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"testing.capacityProbes.{agent}.result is not supported.",
+                    3);
+            if (!double.IsFinite(simulation.RetryAfterSeconds) ||
+                simulation.RetryAfterSeconds is < 0 or > 86_400)
+                throw new TrackerException(
+                    "CONFIG_INVALID",
+                    $"testing.capacityProbes.{agent}.retryAfterSeconds must be between 0 and 86400.",
+                    3);
+        }
+    }
+
+    private static void ValidateNotInstalledAgents(
+        IReadOnlyList<string>? agents,
+        IReadOnlyList<string> supportedAgentIds)
     {
         if (agents is null)
             return;
@@ -675,8 +721,8 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
                 "CONFIG_INVALID",
                 "testing.notInstalledAgents must contain distinct agent names.",
                 3);
-        var invalid = agents.FirstOrDefault(agent => string.IsNullOrWhiteSpace(agent) ||
-            agent.ToLowerInvariant() is not ("claude" or "codex" or "copilot"));
+        var invalid = agents.FirstOrDefault(agent =>
+            string.IsNullOrWhiteSpace(agent) || !IsAgentSupported(supportedAgentIds, agent));
         if (invalid is not null || agents.Any(string.IsNullOrWhiteSpace))
         {
             throw new TrackerException(
@@ -754,7 +800,9 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
                 2);
     }
 
-    private static void ValidateUsageFailure(WorkerUsageFailureConfig? policy)
+    private static void ValidateUsageFailure(
+        WorkerUsageFailureConfig? policy,
+        IReadOnlyList<string> supportedAgentIds)
     {
         if (policy is null)
             return;
@@ -790,13 +838,12 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
 
         foreach (var (source, targets) in policy.Fallbacks)
         {
-            if (source.ToLowerInvariant() is not ("claude" or "codex" or "copilot"))
+            if (!IsAgentSupported(supportedAgentIds, source))
                 throw new TrackerException(
                     "CONFIG_INVALID",
                     $"worker.usageFailure.fallbacks contains unsupported source agent '{source}'.",
                     3);
-            if (targets.Any(target =>
-                    target.ToLowerInvariant() is not ("claude" or "codex" or "copilot")) ||
+            if (targets.Any(target => !IsAgentSupported(supportedAgentIds, target)) ||
                 targets.Any(target => string.Equals(target, source, StringComparison.OrdinalIgnoreCase)) ||
                 targets.Distinct(StringComparer.OrdinalIgnoreCase).Count() != targets.Count)
                 throw new TrackerException(
@@ -806,6 +853,11 @@ public sealed partial class TrackerConfigLoader(Func<string?>? configPathOverrid
                     3);
         }
     }
+
+    private static bool IsAgentSupported(IReadOnlyList<string> supportedAgentIds, string? agent) =>
+        agent is not null && supportedAgentIds.Contains(
+            agent.Trim(),
+            StringComparer.OrdinalIgnoreCase);
 
     private static void ValidateChoice(string? value, string message, params string[] allowed)
     {

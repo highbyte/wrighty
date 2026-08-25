@@ -121,6 +121,12 @@ The repository includes an isolated Local Markdown claim-fencing smoke test and 
 that use real GitHub issues and Projects. See [Integration testing](integration-testing.md) for
 the backend-specific guarantees, fixture setup, safety constraints, and commands.
 
+### Extending agent support
+
+See [Adding a built-in agent](adding-a-built-in-agent.md) for the registry contract, capability
+checklist, generic conformance tests, trust boundaries, and live qualification required for another
+agent integration.
+
 ## Release
 
 Use the repository's `release-wrighty` skill to analyze unreleased changes, recommend a version

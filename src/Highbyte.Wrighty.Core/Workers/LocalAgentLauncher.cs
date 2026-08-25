@@ -69,71 +69,88 @@ internal sealed record LocalAgentLaunchPlatform(
 
 public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
 {
-    private const string ClaudeAgent = "claude";
-    private const string CodexAgent = "codex";
-    private const string CopilotAgent = "copilot";
     private const string WindowsTerminalExecutable = "wt";
-    private static readonly HashSet<string> AllowedExecutables =
-        [ClaudeAgent, CodexAgent, CopilotAgent];
-    private static readonly Dictionary<string, string> AllowedDesktopSchemes =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            [ClaudeAgent] = ClaudeAgent,
-            [CodexAgent] = CodexAgent,
-            [CopilotAgent] = "ghapp"
-        };
-    private static readonly Dictionary<string, string> DesktopApplications =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            [ClaudeAgent] = "Claude",
-            [CodexAgent] = "ChatGPT",
-            [CopilotAgent] = "GitHub Copilot"
-        };
     private readonly IExecutableResolver executables;
     private readonly LocalAgentLaunchPlatform platform;
+    private readonly AgentRegistry registry;
+    private readonly HashSet<string> allowedExecutables;
     private readonly ConcurrentDictionary<string, bool> applicationAvailability =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, bool> executableAvailability =
         new(StringComparer.OrdinalIgnoreCase);
 
     public LocalAgentSessionLauncher(IExecutableResolver executables)
-        : this(executables, CreatePlatform(executables))
+        : this(
+            executables,
+            CreatePlatform(executables),
+            BuiltInAgentRegistry.Create(executables))
+    {
+    }
+
+    public LocalAgentSessionLauncher(
+        IExecutableResolver executables,
+        AgentRegistry registry)
+        : this(executables, CreatePlatform(executables), registry)
     {
     }
 
     internal LocalAgentSessionLauncher(
         IExecutableResolver executables,
         LocalAgentLaunchPlatform platform)
+        : this(executables, platform, BuiltInAgentRegistry.Create(executables))
     {
+    }
+
+    internal LocalAgentSessionLauncher(
+        IExecutableResolver executables,
+        LocalAgentLaunchPlatform platform,
+        AgentRegistry registry)
+    {
+        ArgumentNullException.ThrowIfNull(executables);
+        ArgumentNullException.ThrowIfNull(platform);
+        ArgumentNullException.ThrowIfNull(registry);
         this.executables = executables;
         this.platform = platform;
+        this.registry = registry;
+        allowedExecutables = new HashSet<string>(
+            registry.Descriptors
+                .Where(descriptor => descriptor.Capabilities.HasFlag(
+                    AgentCapabilities.InteractiveCli))
+                .Select(descriptor => descriptor.ExecutableName),
+            StringComparer.Ordinal);
     }
 
     public LocalSessionLaunchCapabilities GetCapabilities(string agentType)
     {
-        var (canLaunchCli, cliUnavailableReason) = GetCliLaunchCapability();
-        if (!DesktopApplications.TryGetValue(agentType, out var application) ||
-            !AllowedDesktopSchemes.TryGetValue(agentType, out var scheme) ||
-            !SupportsDesktop(agentType, platform.OperatingSystem))
+        var descriptor = registry.Find(agentType)?.Descriptor;
+        var (canLaunchCli, cliUnavailableReason) = descriptor is not null &&
+            descriptor.Capabilities.HasFlag(AgentCapabilities.InteractiveCli)
+            ? GetCliLaunchCapability()
+            : (false, "Interactive CLI launch is not supported for this agent.");
+        var launch = descriptor?.LocalLaunch;
+        if (launch is null || !SupportsDesktop(launch, platform.OperatingSystem))
         {
             return new LocalSessionLaunchCapabilities(
                 canLaunchCli,
                 false,
                 cliUnavailableReason,
-                $"{(application ?? "The required Desktop application")} is not supported on " +
+                $"{(launch?.DesktopApplication ?? "The required Desktop application")} is not supported on " +
                 "this operating system.");
         }
         var desktopAvailable =
             applicationAvailability.GetOrAdd(
                 agentType,
-                _ => platform.IsApplicationAvailable(application, scheme));
+                _ => platform.IsApplicationAvailable(
+                    launch.DesktopApplication,
+                    launch.DesktopScheme));
         return new LocalSessionLaunchCapabilities(
             canLaunchCli,
             desktopAvailable,
             cliUnavailableReason,
             DesktopUnavailableReason: desktopAvailable
                 ? null
-                : $"{application} is not installed or its {scheme}:// handler is not registered.");
+                : $"{launch.DesktopApplication} is not installed or its " +
+                  $"{launch.DesktopScheme}:// handler is not registered.");
     }
 
     public async Task<int> ExecuteAsync(
@@ -192,7 +209,8 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
     {
         ValidateDesktopAddress(address);
         var capabilities = GetCapabilities(address.Vendor);
-        if (!SupportsDesktop(address.Vendor, platform.OperatingSystem))
+        var launch = registry.Find(address.Vendor)?.Descriptor.LocalLaunch;
+        if (launch is null || !SupportsDesktop(launch, platform.OperatingSystem))
             return new SessionLaunchResult(
                 SessionLaunchStatus.Unsupported,
                 capabilities.DesktopUnavailableReason);
@@ -274,9 +292,9 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
         }
     }
 
-    private static void ValidateInvocation(LocalAgentInvocation invocation)
+    private void ValidateInvocation(LocalAgentInvocation invocation)
     {
-        if (!AllowedExecutables.Contains(invocation.Executable) ||
+        if (!allowedExecutables.Contains(invocation.Executable) ||
             string.IsNullOrWhiteSpace(invocation.WorkingDirectory) ||
             !Path.IsPathFullyQualified(invocation.WorkingDirectory))
         {
@@ -287,9 +305,10 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
         }
     }
 
-    private static void ValidateDesktopAddress(DesktopLaunchAddress address)
+    private void ValidateDesktopAddress(DesktopLaunchAddress address)
     {
-        if (!AllowedDesktopSchemes.TryGetValue(address.Vendor, out var expectedScheme) ||
+        var expectedScheme = registry.Find(address.Vendor)?.Descriptor.LocalLaunch?.DesktopScheme;
+        if (expectedScheme is null ||
             address.Uri is not { IsAbsoluteUri: true } uri ||
             !string.Equals(uri.Scheme, expectedScheme, StringComparison.OrdinalIgnoreCase))
         {
@@ -380,16 +399,19 @@ public sealed class LocalAgentSessionLauncher : ILocalAgentSessionLauncher
     }
 
     private static bool SupportsDesktop(
-        string agentType,
-        LocalAgentOperatingSystem operatingSystem) =>
-        operatingSystem switch
+        AgentLocalLaunch launch,
+        LocalAgentOperatingSystem operatingSystem)
+    {
+        var platform = operatingSystem switch
         {
-            LocalAgentOperatingSystem.MacOS => AllowedDesktopSchemes.ContainsKey(agentType),
-            LocalAgentOperatingSystem.Windows => AllowedDesktopSchemes.ContainsKey(agentType),
-            LocalAgentOperatingSystem.Linux =>
-                string.Equals(agentType, CopilotAgent, StringComparison.OrdinalIgnoreCase),
-            _ => false
+            LocalAgentOperatingSystem.MacOS => AgentDesktopOperatingSystems.MacOS,
+            LocalAgentOperatingSystem.Windows => AgentDesktopOperatingSystems.Windows,
+            LocalAgentOperatingSystem.Linux => AgentDesktopOperatingSystems.Linux,
+            _ => AgentDesktopOperatingSystems.None
         };
+        return launch.DesktopOperatingSystems.HasFlag(platform) &&
+            platform != AgentDesktopOperatingSystems.None;
+    }
 
     internal static bool IsApplicationAvailable(
         LocalAgentOperatingSystem operatingSystem,

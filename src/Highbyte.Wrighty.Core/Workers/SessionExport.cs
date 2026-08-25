@@ -39,27 +39,6 @@ public interface IAgentSessionExporter
     Task<SessionExportResult> ExportAsync(string sessionId, CancellationToken cancellationToken);
 }
 
-/// <summary>Resolves the exporter for a source agent; every known agent gets one, so callers
-/// handle "no transcript" through <see cref="SessionExportResult.Unavailable"/> uniformly instead
-/// of special-casing vendors.</summary>
-public static class AgentSessionExporters
-{
-    public static IAgentSessionExporter ForAgent(
-        string agent,
-        string? claudeTranscriptRoot = null,
-        string? codexSessionsRoot = null,
-        string? copilotSharesRoot = null)
-        => agent switch
-        {
-            "claude" => new ClaudeSessionExporter(claudeTranscriptRoot),
-            "codex" => new CodexSessionExporter(codexSessionsRoot),
-            "copilot" => new CopilotSessionExporter(copilotSharesRoot),
-            _ => new UnsupportedSessionExporter(agent,
-                $"No session export surface is known for agent '{agent}'; " +
-                "the handoff continues from the work item and workspace.")
-        };
-}
-
 /// <summary>A vendor whose supported export surface is not integrated yet. Exists so the seam
 /// covers every agent from day one and the reason reaches diagnostics instead of a null check.</summary>
 public sealed class UnsupportedSessionExporter(string agent, string reason) : IAgentSessionExporter
@@ -202,7 +181,8 @@ internal static class SessionTranscripts
     /// rejected before it can reach the filesystem as a path segment.</summary>
     public static bool IsSafeSessionId(string sessionId) =>
         !string.IsNullOrWhiteSpace(sessionId) &&
-        sessionId.All(character => char.IsAsciiLetterOrDigit(character) || character == '-');
+        sessionId.All(character =>
+            char.IsAsciiLetterOrDigit(character) || character is '-' or '_');
 
     public static JsonDocument? TryParse(string line)
     {

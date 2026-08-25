@@ -71,9 +71,15 @@ public sealed class SharedMutationHandlerTests
     [Theory]
     // The two that were wrong, pinned by name so a refactor cannot quietly drop them again.
     [InlineData("UserConfiguration")]
-    [InlineData("ProbeAllProviders")]
+    [InlineData("SetAgentEnabled")]
+    [InlineData("ProbeEnabledAgents")]
     [InlineData("ProbeProvider")]
     [InlineData("Configuration")]
+    [InlineData("InstallSkill")]
+    [InlineData("UpdateSkill")]
+    [InlineData("UpdateAgentSkill")]
+    [InlineData("UninstallSkill")]
+    [InlineData("MaintainAllSkills")]
     [InlineData("OpenSessionCli")]
     [InlineData("OpenSessionDesktop")]
     public void Machine_local_and_provider_posts_survive_a_backend_that_owns_its_items(string handler) =>

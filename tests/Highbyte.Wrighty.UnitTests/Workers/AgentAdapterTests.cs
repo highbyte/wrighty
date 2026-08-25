@@ -149,7 +149,7 @@ public sealed class AgentAdapterTests
     [Fact]
     public void Clarification_resume_reassesses_the_reported_blocker_without_repeating_the_gate()
     {
-        var prompt = WorkerPrompt.ForResume(Item.Id, "codex");
+        var prompt = WorkerPrompt.ForResume(Item.Id);
 
         Assert.Contains("reassess the previously reported blocker", prompt);
         Assert.DoesNotContain("Requirements readiness comes first", prompt);
@@ -189,7 +189,7 @@ public sealed class AgentAdapterTests
                 "/tmp/repo",
                 "resume",
                 "session-one",
-                "Continue the clarified item."
+                "$wrighty Continue the clarified item."
             ],
             invocation.Arguments);
     }
@@ -234,7 +234,7 @@ public sealed class AgentAdapterTests
         foreach (var permissions in new IAgentAdapter[]
                  {
                      new ClaudeAgentAdapter(), new CodexAgentAdapter(),
-                     new CopilotAgentAdapter()
+                     new CopilotAgentAdapter(), new OpenCodeAgentAdapter()
                  }.Select(adapter =>
                      adapter.DescribePermissions(AgentPermissionProfile.ReadOnly)))
         {
@@ -249,15 +249,17 @@ public sealed class AgentAdapterTests
     [InlineData("claude", "claude --resume 'session-one'")]
     [InlineData("codex", "codex resume 'session-one'")]
     [InlineData("copilot", "copilot --resume='session-one'")]
+    [InlineData("opencode", "opencode --session 'session-one'")]
     public void Interactive_resume_applies_claim_environment_to_vendor_process(
         string agentType,
         string expectedVendorCommand)
     {
-        IAgentAdapter adapter = agentType switch
+        IAgentInteractiveAdapter adapter = agentType switch
         {
             "claude" => new ClaudeAgentAdapter(),
             "codex" => new CodexAgentAdapter(),
             "copilot" => new CopilotAgentAdapter(),
+            "opencode" => new OpenCodeAgentAdapter(),
             _ => throw new InvalidOperationException()
         };
 
@@ -561,6 +563,7 @@ public sealed class AgentAdapterTests
     [InlineData("claude")]
     [InlineData("codex")]
     [InlineData("copilot")]
+    [InlineData("opencode")]
     public void Liveness_probe_never_requests_the_configured_profile(string agentType)
     {
         IAgentAdapter adapter = agentType switch
@@ -568,6 +571,7 @@ public sealed class AgentAdapterTests
             "claude" => new ClaudeAgentAdapter(),
             "codex" => new CodexAgentAdapter(),
             "copilot" => new CopilotAgentAdapter(),
+            "opencode" => new OpenCodeAgentAdapter(),
             _ => throw new InvalidOperationException()
         };
 
@@ -586,11 +590,20 @@ public sealed class AgentAdapterTests
     [InlineData("claude", "/wrighty Item local:42 has been clarified.")]
     [InlineData("copilot", "/wrighty Item local:42 has been clarified.")]
     [InlineData("codex", "$wrighty Item local:42 has been clarified.")]
+    [InlineData("opencode", "Use the wrighty skill to item local:42 has been clarified.")]
     public void Resume_prompt_explicitly_invokes_vendor_skill(
         string agentType,
         string expectedStart)
     {
-        var prompt = WorkerPrompt.ForResume(Item.Id, agentType);
+        var adapter = agentType switch
+        {
+            "claude" => (IAgentResumeAdapter)new ClaudeAgentAdapter(),
+            "codex" => new CodexAgentAdapter(),
+            "copilot" => new CopilotAgentAdapter(),
+            "opencode" => new OpenCodeAgentAdapter(),
+            _ => throw new InvalidOperationException()
+        };
+        var prompt = adapter.DecorateResumePrompt(WorkerPrompt.ForResume(Item.Id));
         Assert.StartsWith(expectedStart, prompt);
         Assert.Contains("Do not suggest Wrighty claim, edit, takeover, finish, archive, or worker commands", prompt);
     }

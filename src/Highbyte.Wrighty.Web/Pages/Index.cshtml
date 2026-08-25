@@ -32,12 +32,13 @@
                hx-get="/?handler=WorkerSummary"
                hx-trigger="wrighty:ready, wrighty:refresh"
                hx-swap="outerHTML">Loading workers…</section>
-      @if (Model.Capabilities.ProviderCapacity)
+      @if (Model.AgentManagementAvailable)
       {
-        <section id="provider-capacity-region"
-                 hx-get="/?handler=ProviderCapacity"
+        <section id="agents-region"
+                 hx-get="/?handler=Agents"
                  hx-trigger="wrighty:ready, wrighty:refresh"
-                 hx-swap="outerHTML">Loading agent capacity…</section>
+                 hx-sync="#agents-region:replace"
+                 hx-swap="outerHTML">Loading agents…</section>
       }
       <div class="connection-tools">
         <div id="connection-status" class="connection" role="status">Connecting…</div>
@@ -72,6 +73,11 @@
             data-section="settings">Settings <span id="tab-settings-unsaved" class="tab-unsaved"
             title="Go to the first unsaved settings section" hidden>Unsaved</span></button>
   </nav>
+  <section class="page-notifications" aria-label="Notifications">
+    <output id="page-notice-region"
+            aria-live="polite"
+            hidden></output>
+  </section>
   <main>
     @if (Model.Capabilities.LocalBoard)
     {
@@ -138,9 +144,9 @@
                           title="Filters by the item's associated agent: active worker, retained session, or configured agent policy."
                           aria-describedby="board-agent-filter-help">
                     <option value="">Any</option>
-                    @foreach (var agent in Model.AgentOptions)
+                    @foreach (var agent in Model.AgentOptions())
                     {
-                      <option value="@agent">@char.ToUpperInvariant(agent[0])@agent[1..]</option>
+                      <option value="@agent.Id">@agent.DisplayName</option>
                     }
                   </select>
                   <span id="board-agent-filter-help" class="visually-hidden">Filters by the item's associated agent: active worker, retained session, or configured agent policy.</span>

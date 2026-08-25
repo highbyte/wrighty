@@ -569,13 +569,25 @@ public sealed class RepositoryConfigurationServiceTests : IDisposable
         var enabled = await service.MutateAsync(
             PathName,
             before.Revision,
-            new AgentTestingMutation("codex", true, AgentFailureKind.RateLimited, 15),
+            new AgentTestingMutation(
+                "codex",
+                true,
+                AgentFailureKind.RateLimited,
+                15,
+                "usage-exhausted",
+                30),
             approveCanonicalization: false,
             dryRun: false,
             CancellationToken.None);
 
         Assert.True(enabled.Saved);
         Assert.False(enabled.RestartRequired);
+        Assert.Equal(
+            "usage-exhausted",
+            enabled.After.StoredConfiguration.EffectiveTesting.FindCapacityProbe("codex")?.Result);
+        Assert.Equal(
+            30,
+            enabled.After.StoredConfiguration.EffectiveTesting.FindCapacityProbe("codex")?.RetryAfterSeconds);
 
         var cleared = await service.MutateAsync(
             PathName,

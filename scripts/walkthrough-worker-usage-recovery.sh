@@ -38,7 +38,7 @@ usage() {
         "resumes the retained vendor session and completes a tiny fixture item." \
         "" \
         "Options:" \
-        "  --agent NAME            Exhausted vendor: claude, codex, or copilot (default: claude)." \
+        "  --agent NAME            Exhausted vendor: claude, codex, copilot, or opencode (default: claude)." \
         "  --retry-minutes N       Fallback delay when no exact reset is parsed (default: 130)." \
         "  --max-attempts N        Bounded retry attempts (default: 5)." \
         "  --resume-mode MODE      manual (override the timer) or automatic (wait until due)." \

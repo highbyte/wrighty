@@ -60,8 +60,9 @@ usage() {
         "  --configuration NAME      Build configuration; defaults to Debug." \
         "  --skip-build              Use the existing local build output." \
         "  --source-repo OWNER/REPO  Source to derive the -test repo from." \
-        "  --real-agent NAME         Run the actual vendor CLI (claude, codex or copilot) instead" \
-        "                            of a fake. This DOES consume your agent quota. The agent works" \
+        "  --real-agent NAME         Run the actual vendor CLI (claude, codex, copilot or opencode)" \
+        "                            instead of a fake. This DOES consume your agent quota. The" \
+        "                            agent works" \
         "                            in a throwaway clone whose push URL is disabled." \
         "  --keep-fixture            Keep the issue this run created." \
         "  --auto                    Do the operator's steps itself instead of asking you to." \
@@ -91,8 +92,8 @@ require_command gh
 require_command jq
 require_command git
 case "$AGENT" in
-    claude|codex|copilot) ;;
-    *) die "unknown agent '$AGENT'; expected claude, codex or copilot" ;;
+    claude|codex|copilot|opencode) ;;
+    *) die "unknown agent '$AGENT'; expected claude, codex, copilot or opencode" ;;
 esac
 gh auth status >/dev/null 2>&1 || die "gh is not authenticated; run 'gh auth login'"
 
