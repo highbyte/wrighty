@@ -79,6 +79,18 @@ public sealed record UserSettings(string? HostLabel = null)
             StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// Agents explicitly enabled for Wrighty-managed work on this computer. A null value preserves
+    /// the pre-setting behavior: every detected agent is enabled. Once the operator changes one
+    /// agent, the complete explicit allowlist is stored so a newly supported or newly installed
+    /// agent is not silently opted in later.
+    /// </summary>
+    public IReadOnlyList<string>? EnabledAgents { get; init; }
+
+    public bool IsAgentEnabled(string agent, bool detected) => EnabledAgents is null
+        ? detected
+        : EnabledAgents.Contains(agent, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
     /// Looks up one mapping case-insensitively. The comparison is done here rather than by relying
     /// on the dictionary's comparer because deserialization rebuilds these dictionaries with the
     /// default ordinal comparer, silently making a hand-edited <c>"Claude"</c> unmatchable.
@@ -104,6 +116,22 @@ public sealed record UserSettings(string? HostLabel = null)
 
         return null;
     }
+}
+
+public static class AgentEnablementPolicy
+{
+    /// <summary>
+    /// Automatic selection honors the user allowlist. An explicit command-line agent remains an
+    /// intentional one-run override, which keeps recovery and diagnostics possible without
+    /// silently returning the agent to automatic rotation.
+    /// </summary>
+    public static bool AllowsManagedWork(
+        UserSettings settings,
+        string agent,
+        string? explicitlySelectedAgent,
+        bool detected) =>
+        string.Equals(agent, explicitlySelectedAgent?.Trim(), StringComparison.OrdinalIgnoreCase) ||
+        settings.IsAgentEnabled(agent, detected);
 }
 
 public sealed class UserSettingsStore(UserConfigPaths paths)

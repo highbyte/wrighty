@@ -7,6 +7,7 @@
 export const readyRegionSelectors = [
   "#board-content",
   "#worker-summary-region",
+  "#agents-region",
   "#provider-capacity-region",
   "#skill-status-region",
   "#operations-content",
@@ -47,6 +48,21 @@ export function refreshVisibleOperations(doc) {
       doc.querySelector("dialog[open]") || requestInFlight) return false;
 
   operations.dispatchEvent(new CustomEvent("wrighty:operations-refresh"));
+  return true;
+}
+
+/**
+ * Polls the Agents inventory while capacity probes run, but not while a short mutation is replacing
+ * the same controls. Probe requests intentionally remain visible through read-only polling so the
+ * operator sees each acquired probe and its warning state before the vendor call completes.
+ */
+export function refreshAgentsInventory(doc) {
+  const agents = doc.querySelector("#agents-region");
+  const blockingRequest = agents?.matches?.(".htmx-request") ||
+    agents?.querySelector?.(".htmx-request:not([data-agent-probe-request])");
+  if (!agents || doc.visibilityState !== "visible" || blockingRequest) return false;
+
+  agents.dispatchEvent(new CustomEvent("wrighty:refresh"));
   return true;
 }
 

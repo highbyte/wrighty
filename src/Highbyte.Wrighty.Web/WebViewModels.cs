@@ -284,6 +284,39 @@ public sealed record ProviderCapacityPageModel(
     string? ErrorCode = null,
     string? ErrorMessage = null);
 
+/// <summary>One compact row in the machine-local agent inventory.</summary>
+public sealed record AgentInventoryRow(
+    string Agent,
+    string AgentLabel,
+    bool Detected,
+    bool Enabled,
+    string? ExecutablePath,
+    ProviderCapacityView? Capacity,
+    SkillTargetStatus? Skill)
+{
+    public bool ProbeInProgress => Capacity?.ProbeInProgress == true;
+
+    public bool CapacityUnavailable =>
+        Capacity?.State == ProviderCapacityState.UnavailableUntil;
+
+    public bool NeedsAttention => Enabled &&
+        (!Detected || CapacityUnavailable || Skill?.NeedsAttention == true);
+}
+
+public sealed record AgentInventoryPageModel(
+    IReadOnlyList<AgentInventoryRow> Agents,
+    string Revision,
+    string UserConfigurationRevision,
+    string? Notice = null,
+    string? ErrorCode = null,
+    string? ErrorMessage = null,
+    bool MenuOpen = false)
+{
+    public int EnabledCount => Agents.Count(agent => agent.Enabled);
+
+    public int AttentionCount => Agents.Count(agent => agent.NeedsAttention);
+}
+
 /// <summary>
 /// The captured outcome of the most recent agent run, surfaced in the item panel's "Last run"
 /// block so an operator can read the block reason and clarify/requeue without opening the vendor

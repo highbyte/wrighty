@@ -149,6 +149,10 @@ test("header popovers close outside while retaining the one containing the click
     open: true,
     contains: target => target === capacityTarget
   };
+  const agents = {
+    open: true,
+    contains: () => false
+  };
   const skills = {
     open: true,
     contains: () => false
@@ -157,12 +161,13 @@ test("header popovers close outside while retaining the one containing the click
     querySelectorAll: selector => {
       assert.equal(
         selector,
-        ".provider-capacity-menu[open], .skill-status-menu[open]");
-      return [capacity, skills].filter(menu => menu.open);
+        ".agents-menu[open], .provider-capacity-menu[open], .skill-status-menu[open]");
+      return [agents, capacity, skills].filter(menu => menu.open);
     }
   };
 
-  assert.equal(dismissHeaderPopovers(doc, capacityTarget), 1);
+  assert.equal(dismissHeaderPopovers(doc, capacityTarget), 2);
+  assert.equal(agents.open, false);
   assert.equal(capacity.open, true);
   assert.equal(skills.open, false);
   assert.equal(dismissHeaderPopovers(doc, outside), 1);
@@ -170,6 +175,48 @@ test("header popovers close outside while retaining the one containing the click
   assert.equal(dismissHeaderPopovers(doc, outside), 0);
   assert.equal(dismissHeaderPopovers(null, outside), 0);
   assert.equal(dismissHeaderPopovers(doc, null), 0);
+});
+
+test("confirmation dialog clicks retain the underlying header popover", () => {
+  const target = {
+    closest: selector => selector === "dialog" ? {} : null
+  };
+  const agents = {
+    open: true,
+    contains: () => false
+  };
+  const doc = {
+    querySelectorAll: () => [agents]
+  };
+
+  assert.equal(dismissHeaderPopovers(doc, target), 0);
+  assert.equal(agents.open, true);
+});
+
+test("a click from a replaced header menu does not close its replacement", () => {
+  const sourceAgents = {
+    classList: { contains: name => name === "agents-menu" }
+  };
+  const target = {
+    closest: selector => selector.includes(".agents-menu") ? sourceAgents : null
+  };
+  const replacementAgents = {
+    classList: { contains: name => name === "agents-menu" },
+    open: true,
+    contains: () => false
+  };
+  const capacity = {
+    classList: { contains: name => name === "provider-capacity-menu" },
+    open: true,
+    contains: () => false
+  };
+  const doc = {
+    querySelectorAll: () => [replacementAgents, capacity]
+  };
+
+  assert.equal(dismissHeaderPopovers(doc, target), 1);
+  assert.equal(replacementAgents.open, true);
+  assert.equal(capacity.open, false);
 });
 
 test("Board clear all empties only structured filters", () => {

@@ -5,6 +5,7 @@ import {
 } from "./context-panel.mjs";
 import {
   readyPageRegions,
+  refreshAgentsInventory,
   refreshVisibleOperations,
   revealWorkerProcesses
 } from "./page-regions.mjs";
@@ -64,6 +65,7 @@ const filterStatus = document.querySelector("#filter-status");
 const boardFilters = document.querySelector("#board-filters");
 const boardFilterMenu = document.querySelector("#board-filter-menu");
 let boardRevision = null;
+let agentsRevision = null;
 let providerRevision = null;
 let workerSummaryRevision = null;
 let lastOpenedItem = null;
@@ -72,6 +74,9 @@ let boardControlFocus = null;
 let operationsControlFocus = null;
 let settingsScrollAnchor = null;
 let hostedLogViews = [];
+let agentsMenuOpen = false;
+let agentDetailsOpen = null;
+const agentSkillScopes = new Map();
 let workerProcessesRevealPending = false;
 
 syncBoardFilterIndicator(boardFilters, boardFilterMenu);
@@ -95,6 +100,18 @@ function refreshProviderCapacity() {
   }
 }
 
+function refreshSkillStatus() {
+  const skills = document.querySelector("#skill-status-region");
+  if (skills && document.visibilityState === "visible" &&
+      !skills.matches(".htmx-request")) {
+    skills.dispatchEvent(new CustomEvent("wrighty:refresh"));
+  }
+}
+
+function refreshAgents() {
+  refreshAgentsInventory(document);
+}
+
 function refreshWorkerSummary() {
   const workerSummary = document.querySelector("#worker-summary-region");
   if (workerSummary && document.visibilityState === "visible" &&
@@ -106,6 +123,7 @@ function refreshWorkerSummary() {
 function refreshDashboard() {
   refreshBoard();
   refreshWorkerSummary();
+  refreshAgents();
   refreshProviderCapacity();
   refreshVisibleOperations(document);
 }
@@ -123,8 +141,10 @@ document.addEventListener("wrighty:close-panel", () => closePanel());
 
 document.addEventListener("wrighty:refresh", () => {
   boardRevision = null;
+  agentsRevision = null;
   providerRevision = null;
   workerSummaryRevision = null;
+  refreshSkillStatus();
   refreshDashboard();
 });
 
@@ -367,12 +387,30 @@ document.addEventListener("htmx:configRequest", event => {
   if (providerRevision && url.includes("handler=ProviderCapacity")) {
     event.detail.headers["If-None-Match"] = `"${providerRevision}"`;
   }
+  if (agentsRevision && url.includes("handler=Agents")) {
+    event.detail.headers["If-None-Match"] = `"${agentsRevision}"`;
+  }
+  if (url.includes("handler=Agents")) {
+    event.detail.parameters.menuOpen = Boolean(
+      document.querySelector("#agents-region .agents-menu")?.open);
+  }
   if (workerSummaryRevision && url.includes("handler=WorkerSummary")) {
     event.detail.headers["If-None-Match"] = `"${workerSummaryRevision}"`;
   }
 });
 
 document.addEventListener("htmx:beforeRequest", event => {
+  const agentsRegion = event.detail.target?.closest?.("#agents-region") ||
+    event.target.closest?.("#agents-region");
+  if (agentsRegion) {
+    agentsMenuOpen = Boolean(agentsRegion.querySelector(".agents-menu")?.open);
+    agentDetailsOpen = agentsRegion.querySelector("[data-agent-details]:not([hidden])")?.id || null;
+    const selectedScope = agentsRegion.querySelector(
+      "[data-agent-details]:not([hidden]) [data-agent-skill-manager-scope]")?.value;
+    if (agentDetailsOpen && selectedScope) {
+      agentSkillScopes.set(agentDetailsOpen, selectedScope);
+    }
+  }
   const card = event.target.closest?.(".card");
   if (card) lastOpenedItem = card.dataset.itemId;
   const scrollAnchor = captureSettingsScrollAnchor(
@@ -416,6 +454,27 @@ document.addEventListener("htmx:afterSwap", event => {
     document.querySelector("#provider-capacity-region");
   if (providerCapacity?.dataset.revision) {
     providerRevision = providerCapacity.dataset.revision;
+  }
+  const agents = event.detail.target.closest?.("#agents-region") ||
+    document.querySelector("#agents-region");
+  if (agents?.dataset.revision) {
+    agentsRevision = agents.dataset.revision;
+    const menu = agents.querySelector(".agents-menu");
+    if (menu) menu.open = menu.open || agentsMenuOpen;
+    if (agentDetailsOpen) {
+      const details = document.getElementById(agentDetailsOpen);
+      if (details) {
+        details.hidden = false;
+        document.querySelector(`[data-agent-details-toggle="${agentDetailsOpen}"]`)
+          ?.setAttribute("aria-expanded", "true");
+        const scope = details.querySelector("[data-agent-skill-manager-scope]");
+        const selectedScope = agentSkillScopes.get(agentDetailsOpen);
+        if (scope && selectedScope) {
+          scope.value = selectedScope;
+          syncAgentSkillManagerScope(scope);
+        }
+      }
+    }
   }
   const workerSummary =
     event.detail.target.closest?.("#worker-summary-region") ||
@@ -608,8 +667,33 @@ function handleOperationsSortClick(target) {
 }
 
 function handleGeneralClick(target) {
+  const agentDetailsToggle = target.closest("[data-agent-details-toggle]");
+  if (agentDetailsToggle) {
+    const details = document.getElementById(agentDetailsToggle.dataset.agentDetailsToggle);
+    if (details) {
+      const opening = details.hidden;
+      document.querySelectorAll("[data-agent-details]").forEach(row => { row.hidden = true; });
+      document.querySelectorAll("[data-agent-details-toggle]").forEach(button => {
+        button.setAttribute("aria-expanded", "false");
+      });
+      details.hidden = !opening;
+      agentDetailsToggle.setAttribute("aria-expanded", String(opening));
+    }
+    return;
+  }
+
+  const agentDetailsClose = target.closest("[data-agent-details-close]");
+  if (agentDetailsClose) {
+    const details = document.getElementById(agentDetailsClose.dataset.agentDetailsClose);
+    if (details) details.hidden = true;
+    document.querySelector(`[data-agent-details-toggle="${agentDetailsClose.dataset.agentDetailsClose}"]`)
+      ?.setAttribute("aria-expanded", "false");
+    return;
+  }
+
   if (target.closest("#refresh-board")) {
     boardRevision = null;
+    agentsRevision = null;
     providerRevision = null;
     refreshDashboard();
   }
@@ -647,6 +731,39 @@ function handleGeneralClick(target) {
   const expandButton = target.closest(".expand-value-button[data-expand-target]");
   if (expandButton) toggleExpandableValue(expandButton);
 }
+
+function syncAgentSkillScope(select) {
+  const bulkActions = select.closest(".agents-skill-bulk-actions");
+  if (!bulkActions) return;
+  bulkActions.querySelectorAll("[data-agent-skill-scope-value]").forEach(input => {
+    input.value = select.value;
+  });
+  const uninstall = bulkActions.querySelector("[data-agent-skills-uninstall]");
+  if (!uninstall) return;
+  uninstall.disabled = select.selectedOptions[0]?.dataset.canUninstall !== "true";
+}
+
+function syncAgentSkillManagerScope(select) {
+  const manager = select.closest("[data-agent-skill-manager]");
+  if (!manager) return;
+  const details = manager.closest("[data-agent-details]");
+  if (details?.id) agentSkillScopes.set(details.id, select.value);
+  manager.querySelectorAll("[data-agent-skill-scope-panel]").forEach(panel => {
+    const active = panel.dataset.agentSkillScopePanel === select.value;
+    panel.classList.toggle("is-active", active);
+    panel.setAttribute("aria-hidden", String(!active));
+  });
+}
+
+document.addEventListener("change", event => {
+  const managerScope = event.target.closest?.("[data-agent-skill-manager-scope]");
+  if (managerScope) {
+    syncAgentSkillManagerScope(managerScope);
+    return;
+  }
+  const scope = event.target.closest?.("[data-agent-skill-scope]");
+  if (scope) syncAgentSkillScope(scope);
+});
 
 document.addEventListener("click", event => {
   closeTokenPickerPopovers(document, event.target);

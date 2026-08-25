@@ -99,7 +99,17 @@ copy, or uninstall a recognized unmodified copy. It also offers **Install all mi
 scope selected by default, **Update all outdated**, and separately confirmed user/project bulk
 uninstalls. Modified or malformed content remains CLI-only because the web console never applies
 `--force`. Existing copies at both scopes remain a warning until one is uninstalled. Every action
-refreshes the header immediately and reports its result in the page notification area.
+refreshes the header immediately without adding a success status message; failures remain visible
+as errors.
+
+During the consolidated agent-management transition, the neighboring **Agents** menu exposes the
+same safe maintenance operations in a compact per-agent table. **Manage skill** expands one row;
+it does not stack another overlay. Its location selector switches one card between the User and
+Project path, state, and available action. An outdated row also provides an **Update skill**
+shortcut that updates every outdated location for that target. Per-agent skill controls remain
+disabled while that agent is disabled. Codex, Copilot, and OpenCode each point to their shared
+physical target, and the expanded row says that an action affects all three. The original **Agent
+skills** control remains available for comparison until the consolidated surface has been accepted.
 
 ## Supported skill surfaces
 

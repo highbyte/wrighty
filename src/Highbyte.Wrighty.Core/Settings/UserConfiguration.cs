@@ -73,6 +73,42 @@ public sealed record HostLabelMutation(string? Label) : UserConfigurationMutatio
 }
 
 /// <summary>
+/// Enables or disables one agent without replacing unrelated user settings. The detected agents
+/// are supplied by the trusted caller only to materialize the legacy implicit state on the first
+/// edit; subsequent edits use the stored explicit allowlist.
+/// </summary>
+public sealed record AgentEnablementMutation(
+    string Agent,
+    bool Enabled,
+    IReadOnlyList<string> DetectedAgents) : UserConfigurationMutation
+{
+    internal override UserSettings Apply(UserSettings settings)
+    {
+        var enabled = new HashSet<string>(
+            settings.EnabledAgents ?? DetectedAgents,
+            StringComparer.OrdinalIgnoreCase);
+        if (Enabled)
+        {
+            enabled.Add(Agent);
+        }
+        else
+        {
+            enabled.Remove(Agent);
+        }
+
+        return settings with
+        {
+            EnabledAgents = enabled
+                .Select(agent => agent.Trim().ToLowerInvariant())
+                .Where(agent => agent.Length > 0)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Order(StringComparer.OrdinalIgnoreCase)
+                .ToArray()
+        };
+    }
+}
+
+/// <summary>
 /// Sets or clears what one profile means for one agent in the user's settings.
 ///
 /// Scoped to a single (profile, agent) pair rather than replacing the whole map, because two
@@ -275,6 +311,19 @@ public sealed class UserConfigurationService(UserSettingsStore store) : IUserCon
             "Symbolic name shown when this computer hands work over. A user setting because it " +
             "names your installation, not the project; the anonymous label applies when unset."),
         new ConfigurationSettingDescriptor(
+            "enabledAgents",
+            ConfigurationScope.User,
+            "string[]?",
+            settings.EnabledAgents,
+            settings.EnabledAgents,
+            settings.EnabledAgents is null ? "detected-agents" : "user",
+            ConfigurationEditMode.Ordinary,
+            ConfigurationEffectiveBoundary.NextCommand,
+            RequiresQuiescence: false,
+            Sensitivity: null,
+            "Agents eligible for Wrighty-managed workers and launch actions on this computer. " +
+            "When unset, every detected agent remains enabled for upgrade compatibility."),
+        new ConfigurationSettingDescriptor(
             "workerProfiles",
             ConfigurationScope.User,
             "map<profile, map<agent, {model, effort}>>",
@@ -300,6 +349,17 @@ public sealed class UserConfigurationService(UserSettingsStore store) : IUserCon
         if (!string.Equals(before.HostLabel, after.HostLabel, StringComparison.Ordinal))
         {
             changes.Add(new ConfigurationChange("hostLabel", before.HostLabel, after.HostLabel));
+        }
+
+        if (!(before.EnabledAgents ?? []).SequenceEqual(
+                after.EnabledAgents ?? [],
+                StringComparer.OrdinalIgnoreCase) ||
+            (before.EnabledAgents is null) != (after.EnabledAgents is null))
+        {
+            changes.Add(new ConfigurationChange(
+                "enabledAgents",
+                before.EnabledAgents,
+                after.EnabledAgents));
         }
 
         // Reported per (profile, agent) rather than as one workerProfiles diff, so the notice names

@@ -422,6 +422,7 @@ public sealed class WrightyWebServer(
         string.Equals(handler, "StartHostedWorker", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "StopWorker", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "UserConfiguration", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "SetAgentEnabled", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ProfileMapping", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ValidateTarget", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "ApproveContext", StringComparison.OrdinalIgnoreCase) ||
@@ -429,6 +430,7 @@ public sealed class WrightyWebServer(
         // available regardless of which project backend the console displays.
         string.Equals(handler, "InstallSkill", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "UpdateSkill", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "UpdateAgentSkill", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "UninstallSkill", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "MaintainAllSkills", StringComparison.OrdinalIgnoreCase) ||
         // Opening a retained vendor session operates on Wrighty's local claim/session control
@@ -440,7 +442,8 @@ public sealed class WrightyWebServer(
         // backend-specific, and the console renders its buttons on GitHub — where, until this was
         // measured, every one of them returned 405. Pre-existing, and the same omission as above.
         string.Equals(handler, "ProbeProvider", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(handler, "ProbeAllProviders", StringComparison.OrdinalIgnoreCase);
+        string.Equals(handler, "ProbeAllProviders", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(handler, "ProbeEnabledAgents", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsLocalSurfaceHandler(string? handler) =>
         string.Equals(handler, "Board", StringComparison.OrdinalIgnoreCase) ||

@@ -468,7 +468,41 @@ actions install all entirely missing targets at the selected scope, update every
 uninstall all safe copies at an explicitly named user or project scope. Modified or malformed
 content remains warning-only because the browser never applies `--force`. The browser submits only
 allowlisted target and scope tokens, never a filesystem path. Successful maintenance refreshes the
-overlay immediately and reports the result in the page-level notification area.
+overlay silently; failures remain visible as errors.
+
+The header also shows the newer consolidated **Agents** inventory alongside **Agent capacity** and
+**Agent skills** while the replacement surface is being evaluated. Its compact table keeps one
+agent per row and separates four independent facts: whether the CLI is detected, whether the user
+has enabled it for Wrighty-managed work, its recorded capacity, and its skill state. The control
+summarizes capacity as **Available x/y**, where `x` is the number of enabled agents with available
+capacity and `y` is the total number of enabled agents. Agents without capacity-probe support count
+in `y` but not `x`. The control uses its warning treatment while no agent is enabled, no agent CLI
+is detected, a capacity probe is
+running, or an enabled agent needs attention. A deliberately disabled agent does not keep the
+header in an attention state because its skill is missing or outdated. Probe-in-progress capacity
+states are also highlighted in the table until the probe completes.
+
+Enablement is a user-scoped preference shared across repositories on the computer. With no explicit
+preference, every detected agent remains enabled for upgrade compatibility. The first toggle stores
+the complete allowlist, so installing a new supported CLI later does not silently opt it into
+automatic work. Automatic selection excludes disabled agents; an explicit `--agent` remains an
+intentional one-run override. A disabled agent's row keeps its enablement switch available but
+disables **Probe**, **Update skill**, and **Manage skill** until the agent is enabled again.
+
+The table offers **Probe** in its header to refresh every enabled agent. All bulk skill maintenance
+is grouped in one footer: choose **User skills** or **Project skills**, then install missing skills
+or uninstall safe copies at that location; **Update skills** keeps each existing copy in its current
+location.
+An enabled **Install missing** or **Update skills** action uses the warning color so required
+maintenance is easy to spot. An outdated agent row also offers a warning-colored **Update skill**
+shortcut immediately before **Manage skill**; it updates every outdated copy for that shared skill
+target. **Manage skill** expands the selected row instead of opening a second overlay. One location selector
+switches the card between User and Project state, path, and the available **Install**, **Update**, or
+**Uninstall** action. Shared physical targets are named explicitly: managing the Codex, Copilot, or
+OpenCode skill affects their common `.agents/skills/wrighty` copy and bulk actions deduplicate it.
+The inventory preserves its open row and selected skill location across polling refreshes. The two
+older header controls remain available during this transition so operators can compare both
+surfaces before they are retired.
 
 Board cards and the item panel show a **worktree** badge when a worker worktree is recorded for the
 item — an at-a-glance signal derived from the session record with no git call. The per-item

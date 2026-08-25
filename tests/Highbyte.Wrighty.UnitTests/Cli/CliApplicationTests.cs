@@ -2658,6 +2658,37 @@ public sealed class CliApplicationTests : IDisposable
     }
 
     [Fact]
+    public async Task Agent_facing_command_omits_skill_warnings_for_disabled_agents()
+    {
+        var settings = TempSettingsStore();
+        await settings.SaveAsync(
+            new UserSettings { EnabledAgents = ["claude"] },
+            CancellationToken.None);
+        var error = new StringWriter();
+        var application = Application(
+            new RecordingBackend(),
+            new StringReader(string.Empty),
+            new StringWriter(),
+            error,
+            webServer: new RecordingWebServer(),
+            userSettings: settings,
+            runtimeCatalog: new FixedRuntimeCatalog("claude", "codex", "copilot"),
+            skillMaintenance: new FixedWebSkillMaintenance([
+                new WebSkillInstallation(
+                    "codex,copilot,opencode",
+                    "Codex, Copilot, OpenCode",
+                    "user",
+                    "/home/test/.agents/skills/wrighty",
+                    WebSkillInstallationState.Outdated,
+                    "0.10.0",
+                    "0.16.0")
+            ]));
+
+        Assert.Equal(0, await application.InvokeAsync(["web", "--no-open"]));
+        Assert.Equal(string.Empty, error.ToString());
+    }
+
+    [Fact]
     public async Task Web_command_uses_safe_defaults()
     {
         var webServer = new RecordingWebServer();

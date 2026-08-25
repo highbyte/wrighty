@@ -44,10 +44,10 @@ wrighty config profile set deep --agent claude --model opus --effort xhigh
 wrighty config profile unset deep --agent claude
 ```
 
-The web console edits this scope too. `wrighty web` shows a **User** section inside the
-**Settings** tab with the host label and execution-profile mappings. It writes the same file, and
-refuses a save whose view of it has gone stale — so a page left open while you change something
-from a terminal cannot overwrite that change.
+The web console edits this scope too. `wrighty web` shows the agent enablement allowlist in the
+header's **Agents** menu and the remaining user settings inside the **User** section of
+**Settings**. Both write the same file and refuse a save whose view of it has gone stale — so a
+page left open while you change something from a terminal cannot overwrite that change.
 
 `wrighty config show` displays both user and repository configuration. The user section includes
 the host label and all stored execution-profile mappings, and always prints the absolute
@@ -65,6 +65,7 @@ Every user setting and its default is listed below.
 | Setting | CLI | Default | Description |
 | --- | --- | --- | --- |
 | `hostLabel` | `wrighty config user host set <label>` / `clear` | (unset → `anonymous`) | Symbolic host name published in the GitHub [status comment](worker.md#github-status-comment) in place of the real machine name (`Environment.MachineName`, which often embeds a person's name). When unset, the comment shows the placeholder `anonymous`, so the real machine name is never published by default. Set a label that is meaningful to you but reveals nothing to disambiguate which machine holds a retained worktree. |
+| `enabledAgents` | Web console **Agents** menu | (unset → every detected agent) | Explicit allowlist for agents eligible for automatic Wrighty-managed work on this computer. The first toggle materializes the complete detected set before applying the change; later installations are therefore not silently enabled. An explicit `--agent` selection remains a one-run override. |
 | `workerProfiles` | `wrighty config profile set/unset` | (unset → built-in tiers) | Your model and reasoning-effort mapping for each execution profile and agent. User-scoped because a model name describes what you have installed and are entitled to, not what the project agreed on — the shared vocabulary lives in the repository instead. Absent means the built-in `economy`/`balanced`/`deep` tiers apply, which set effort only. See [Execution profiles](execution-profiles.md). |
 
 Additional user-scoped settings introduced later are documented here.

@@ -75,6 +75,8 @@ public sealed class IndexModel(
 
     public bool SkillMaintenanceAvailable => skillMaintenance is not null;
 
+    public bool AgentManagementAvailable => userConfiguration is not null;
+
     public IReadOnlyList<AgentOptionView> AgentOptions() => agentOptions
         .Select(AgentOption)
         .ToArray();
@@ -104,9 +106,75 @@ public sealed class IndexModel(
         CancellationToken cancellationToken) =>
         Partial("Shared/_SkillStatus", await SkillStatusAsync(cancellationToken));
 
+    public async Task<IActionResult> OnGetAgentsAsync(
+        [FromQuery] bool menuOpen,
+        CancellationToken cancellationToken)
+    {
+        var model = await AgentInventoryAsync(cancellationToken, menuOpen: menuOpen);
+        var etag = $"\"{model.Revision}\"";
+        if (Request.Headers.IfNoneMatch.Any(value =>
+                string.Equals(value, etag, StringComparison.Ordinal)))
+        {
+            return StatusCode(StatusCodes.Status204NoContent);
+        }
+
+        Response.Headers.ETag = etag;
+        return Partial("Shared/_Agents", model);
+    }
+
+    public async Task<IActionResult> OnPostSetAgentEnabledAsync(
+        string? agent,
+        bool enabled,
+        string revision,
+        CancellationToken cancellationToken)
+    {
+        if (userConfiguration is null)
+        {
+            return Partial(
+                "Shared/_Agents",
+                await AgentInventoryAsync(
+                    cancellationToken,
+                    errorCode: "USER_CONFIGURATION_UNAVAILABLE",
+                    errorMessage: "User settings are not available to this web process.",
+                    menuOpen: true));
+        }
+
+        try
+        {
+            var normalized = NormalizeManagedAgent(agent);
+            var detected = agentRuntimeCatalog.Snapshot().InstalledAgents
+                .Select(runtime => runtime.Agent)
+                .ToArray();
+            await userConfiguration.MutateAsync(
+                revision,
+                new Highbyte.Wrighty.Settings.AgentEnablementMutation(
+                    normalized,
+                    enabled,
+                    detected),
+                dryRun: false,
+                cancellationToken);
+            return Partial(
+                "Shared/_Agents",
+                await AgentInventoryAsync(cancellationToken, menuOpen: true));
+        }
+        catch (TrackerException exception)
+        {
+            Response.StatusCode = Status(exception);
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            return Partial(
+                "Shared/_Agents",
+                await AgentInventoryAsync(
+                    cancellationToken,
+                    errorCode: exception.Code,
+                    errorMessage: SafeMessage(exception),
+                    menuOpen: true));
+        }
+    }
+
     public Task<IActionResult> OnPostUpdateSkillAsync(
         string agentSelection,
         string scope,
+        string? surface,
         CancellationToken cancellationToken) =>
         SkillMutationAsync(
             async maintenance =>
@@ -119,11 +187,25 @@ public sealed class IndexModel(
                 return $"Updated the {updated.Scope} Wrighty skill for {updated.AgentLabel} to " +
                     $"{updated.BundledVersion}.";
             },
-            cancellationToken);
+            cancellationToken,
+            surface);
+
+    public Task<IActionResult> OnPostUpdateAgentSkillAsync(
+        string agentSelection,
+        string? surface,
+        CancellationToken cancellationToken) =>
+        SkillMutationAsync(
+            maintenance => UpdateAgentSkillsAsync(
+                maintenance,
+                agentSelection,
+                cancellationToken),
+            cancellationToken,
+            surface);
 
     public Task<IActionResult> OnPostInstallSkillAsync(
         string agentSelection,
         string scope,
+        string? surface,
         CancellationToken cancellationToken) =>
         SkillMutationAsync(
             async maintenance =>
@@ -136,11 +218,13 @@ public sealed class IndexModel(
                 return $"Installed the {installed.Scope} Wrighty skill for " +
                     $"{installed.AgentLabel}.";
             },
-            cancellationToken);
+            cancellationToken,
+            surface);
 
     public Task<IActionResult> OnPostUninstallSkillAsync(
         string agentSelection,
         string scope,
+        string? surface,
         CancellationToken cancellationToken) =>
         SkillMutationAsync(
             async maintenance =>
@@ -152,24 +236,29 @@ public sealed class IndexModel(
                     cancellationToken);
                 return $"Uninstalled the {removed.Scope} Wrighty skill for {removed.AgentLabel}.";
             },
-            cancellationToken);
+            cancellationToken,
+            surface);
 
     public Task<IActionResult> OnPostMaintainAllSkillsAsync(
         string operation,
         string? scope,
+        string? surface,
         CancellationToken cancellationToken) =>
         SkillMutationAsync(
             maintenance => MaintainAllSkillsAsync(
                 maintenance,
                 operation,
                 scope,
+                surface,
                 cancellationToken),
-            cancellationToken);
+            cancellationToken,
+            surface);
 
     private async Task<string> MaintainAllSkillsAsync(
         IWebSkillMaintenance maintenance,
         string operation,
         string? scope,
+        string? surface,
         CancellationToken cancellationToken)
     {
         IReadOnlyList<WebSkillInstallation> results;
@@ -177,10 +266,15 @@ public sealed class IndexModel(
         {
             case "install":
                 var installScope = scope ?? "user";
-                results = await maintenance.InstallAllMissingAsync(
-                    installScope,
-                    state.WorkspacePath,
-                    cancellationToken);
+                results = IsAgentsSurface(surface)
+                    ? await InstallMissingEnabledSkillsAsync(
+                        maintenance,
+                        installScope,
+                        cancellationToken)
+                    : await maintenance.InstallAllMissingAsync(
+                        installScope,
+                        state.WorkspacePath,
+                        cancellationToken);
                 return $"Installed {results.Count} missing Wrighty skill " +
                     $"target{(results.Count == 1 ? string.Empty : "s")} at {installScope} scope.";
             case "update":
@@ -208,12 +302,90 @@ public sealed class IndexModel(
         }
     }
 
+    private async Task<IReadOnlyList<WebSkillInstallation>> InstallMissingEnabledSkillsAsync(
+        IWebSkillMaintenance maintenance,
+        string scope,
+        CancellationToken cancellationToken)
+    {
+        var runtime = agentRuntimeCatalog.Snapshot();
+        var user = await LoadUserConfigurationAsync(cancellationToken);
+        var settings = user?.Stored ?? new Highbyte.Wrighty.Settings.UserSettings();
+        var enabled = runtime.InstalledAgents
+            .Where(agent => settings.IsAgentEnabled(agent.Agent, detected: true))
+            .Select(agent => agent.Agent)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var targets = (await maintenance.InspectAsync(state.WorkspacePath, cancellationToken))
+            .GroupBy(installation => installation.AgentSelection, StringComparer.OrdinalIgnoreCase)
+            .Where(target => target.All(installation =>
+                installation.State == WebSkillInstallationState.Missing))
+            .Where(target => target.Key.Split(',').Any(enabled.Contains))
+            .Select(target => target.Key)
+            .ToArray();
+        var installed = new List<WebSkillInstallation>();
+        foreach (var target in targets)
+        {
+            installed.Add(await maintenance.InstallAsync(
+                target,
+                scope,
+                state.WorkspacePath,
+                cancellationToken));
+        }
+
+        return installed;
+    }
+
+    private async Task<string> UpdateAgentSkillsAsync(
+        IWebSkillMaintenance maintenance,
+        string agentSelection,
+        CancellationToken cancellationToken)
+    {
+        var outdated = (await maintenance.InspectAsync(state.WorkspacePath, cancellationToken))
+            .Where(installation =>
+                string.Equals(
+                    installation.AgentSelection,
+                    agentSelection,
+                    StringComparison.OrdinalIgnoreCase) &&
+                installation.State == WebSkillInstallationState.Outdated)
+            .ToArray();
+        if (outdated.Length == 0)
+        {
+            throw new TrackerException(
+                "SKILL_UPDATE_NOT_ALLOWED",
+                "This agent does not have a recognized outdated Wrighty skill installation.",
+                9);
+        }
+
+        foreach (var installation in outdated)
+        {
+            await maintenance.UpdateAsync(
+                installation.AgentSelection,
+                installation.Scope,
+                state.WorkspacePath,
+                cancellationToken);
+        }
+
+        return $"Updated {outdated.Length} outdated Wrighty skill " +
+            $"installation{(outdated.Length == 1 ? string.Empty : "s")} for " +
+            $"{outdated[0].AgentLabel}.";
+    }
+
     private async Task<IActionResult> SkillMutationAsync(
         Func<IWebSkillMaintenance, Task<string>> mutation,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? surface = null)
     {
         if (skillMaintenance is null)
         {
+            if (IsAgentsSurface(surface))
+            {
+                return Partial(
+                    "Shared/_Agents",
+                    await AgentInventoryAsync(
+                        cancellationToken,
+                        errorCode: "SKILL_MAINTENANCE_UNAVAILABLE",
+                        errorMessage: "Skill maintenance is not available to this web process.",
+                        menuOpen: true));
+            }
             return Partial(
                 "Shared/_SkillStatus",
                 new SkillStatusPageModel(
@@ -224,14 +396,34 @@ public sealed class IndexModel(
 
         try
         {
+            _ = await mutation(skillMaintenance);
+            Response.Headers[
+                IsAgentsSurface(surface) ? "HX-Trigger-After-Swap" : "HX-Trigger"] =
+                "wrighty:refresh";
+            if (IsAgentsSurface(surface))
+            {
+                return Partial(
+                    "Shared/_Agents",
+                    await AgentInventoryAsync(cancellationToken, menuOpen: true));
+            }
             return Partial(
                 "Shared/_SkillStatus",
-                await SkillStatusAsync(cancellationToken, await mutation(skillMaintenance)));
+                await SkillStatusAsync(cancellationToken));
         }
         catch (TrackerException exception)
         {
             Response.StatusCode = Status(exception);
             WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            if (IsAgentsSurface(surface))
+            {
+                return Partial(
+                    "Shared/_Agents",
+                    await AgentInventoryAsync(
+                        cancellationToken,
+                        errorCode: exception.Code,
+                        errorMessage: SafeMessage(exception),
+                        menuOpen: true));
+            }
             return Partial(
                 "Shared/_SkillStatus",
                 await SkillStatusAsync(
@@ -240,6 +432,9 @@ public sealed class IndexModel(
                     errorMessage: SafeMessage(exception)));
         }
     }
+
+    private static bool IsAgentsSurface(string? surface) =>
+        string.Equals(surface, "agents", StringComparison.OrdinalIgnoreCase);
 
     public async Task<IActionResult> OnPostStartHostedWorkerAsync(
         [FromForm] OperationsListInput input,
@@ -601,6 +796,87 @@ public sealed class IndexModel(
                 errorCode ?? exception.Code,
                 errorMessage ?? SafeMessage(exception));
         }
+    }
+
+    private async Task<AgentInventoryPageModel> AgentInventoryAsync(
+        CancellationToken cancellationToken,
+        string? notice = null,
+        string? errorCode = null,
+        string? errorMessage = null,
+        bool menuOpen = false)
+    {
+        var runtime = agentRuntimeCatalog.Snapshot();
+        var user = await LoadUserConfigurationAsync(cancellationToken);
+        var settings = user?.Stored ?? new Highbyte.Wrighty.Settings.UserSettings();
+        var availability = await providerCapacity.ListAsync(cancellationToken);
+        var capacityByAgent = availability.ToDictionary(
+            provider => provider.Agent,
+            StringComparer.OrdinalIgnoreCase);
+        var capacityAgents = providerCapacityProbe.SupportedAgents.ToHashSet(
+            StringComparer.OrdinalIgnoreCase);
+        var skillStatus = await SkillStatusAsync(cancellationToken);
+        var skillTargets = skillStatus.Targets();
+
+        var rows = descriptorsByName.Values
+            .Where(descriptor => descriptor.Capabilities.HasFlag(
+                AgentCapabilities.WorkerExecution))
+            .OrderBy(descriptor => descriptor.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .Select(descriptor =>
+            {
+                var agentRuntime = runtime.Find(descriptor.Id);
+                var detected = agentRuntime?.Installed == true;
+                ProviderCapacityView? capacity = null;
+                if (detected && capacityAgents.Contains(descriptor.Id))
+                {
+                    capacity = capacityByAgent.TryGetValue(descriptor.Id, out var stored)
+                        ? ProviderCapacityView.From(stored)
+                        : ProviderCapacityView.Available(descriptor.Id);
+                }
+                var skill = skillTargets.FirstOrDefault(target =>
+                    target.AgentSelection.Split(',').Contains(
+                        descriptor.Id,
+                        StringComparer.OrdinalIgnoreCase));
+                return new AgentInventoryRow(
+                    descriptor.Id,
+                    descriptor.DisplayName,
+                    detected,
+                    settings.IsAgentEnabled(descriptor.Id, detected),
+                    agentRuntime?.ExecutablePath,
+                    capacity,
+                    skill);
+            })
+            .ToArray();
+        var revisionValue = string.Join('\n', rows.Select(row =>
+            $"{row.Agent}|{row.Detected}|{row.Enabled}|{row.Capacity?.State}|" +
+            $"{row.Skill?.IsMissing}|{row.Skill?.IsDuplicate}|" +
+            string.Join(',', row.Skill?.Installations.Select(installation =>
+                $"{installation.Scope}:{installation.State}:{installation.InstalledVersion}") ?? [])));
+        var revision = Convert.ToHexStringLower(
+            SHA256.HashData(Encoding.UTF8.GetBytes(revisionValue)));
+        return new AgentInventoryPageModel(
+            rows,
+            revision,
+            user?.Revision ?? Highbyte.Wrighty.Settings.UserConfigurationSnapshot.AbsentRevision,
+            notice,
+            errorCode ?? skillStatus.ErrorCode,
+            errorMessage ?? skillStatus.ErrorMessage,
+            menuOpen);
+    }
+
+    private string NormalizeManagedAgent(string? agent)
+    {
+        var normalized = agent?.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(normalized) ||
+            !descriptorsByName.TryGetValue(normalized, out var descriptor) ||
+            !descriptor.Capabilities.HasFlag(AgentCapabilities.WorkerExecution))
+        {
+            throw new TrackerException(
+                "AGENT_UNSUPPORTED",
+                $"Agent '{normalized ?? string.Empty}' is not a supported worker agent.",
+                2);
+        }
+
+        return normalized;
     }
 
     /// <summary>
@@ -1832,7 +2108,18 @@ public sealed class IndexModel(
             var notice = availability.State == ProviderCapacityState.Available
                 ? $"{label} capacity is available. Automatic {label} work is enabled."
                 : $"{label} still reports exhausted capacity. Automatic work remains paused.";
-            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            Response.Headers[
+                IsAgentsSurface(surface) ? "HX-Trigger-After-Swap" : "HX-Trigger"] =
+                "wrighty:refresh";
+            if (IsAgentsSurface(surface))
+            {
+                return Partial(
+                    "Shared/_Agents",
+                    await AgentInventoryAsync(
+                        cancellationToken,
+                        notice,
+                        menuOpen: true));
+            }
             if (string.Equals(surface, "header", StringComparison.OrdinalIgnoreCase))
                 return await ProviderCapacityProbeAsync(
                     notice,
@@ -1847,6 +2134,17 @@ public sealed class IndexModel(
         }
         catch (TrackerException exception)
         {
+            if (IsAgentsSurface(surface))
+            {
+                Response.StatusCode = Status(exception);
+                return Partial(
+                    "Shared/_Agents",
+                    await AgentInventoryAsync(
+                        cancellationToken,
+                        errorCode: exception.Code,
+                        errorMessage: SafeMessage(exception),
+                        menuOpen: true));
+            }
             if (string.Equals(surface, "header", StringComparison.OrdinalIgnoreCase))
             {
                 Response.StatusCode = Status(exception);
@@ -1908,6 +2206,59 @@ public sealed class IndexModel(
                 null,
                 cancellationToken,
                 exception);
+        }
+    }
+
+    public async Task<IActionResult> OnPostProbeEnabledAgentsAsync(
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var runtime = agentRuntimeCatalog.Snapshot();
+            var user = await LoadUserConfigurationAsync(cancellationToken);
+            var settings = user?.Stored ?? new Highbyte.Wrighty.Settings.UserSettings();
+            var agents = providerCapacityProbe.SupportedAgents
+                .Where(agent => runtime.IsInstalled(agent))
+                .Where(agent => settings.IsAgentEnabled(agent, detected: true))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var repositoryPath = state.Config.SourcePath is { } sourcePath
+                ? Path.GetDirectoryName(Path.GetFullPath(sourcePath)) ??
+                  Directory.GetCurrentDirectory()
+                : Directory.GetCurrentDirectory();
+            var availability = await Task.WhenAll(
+                agents.Select(agent => providerCapacityProbe.ProbeProviderAsync(
+                    state.Config,
+                    agent,
+                    repositoryPath,
+                    _ => Task.CompletedTask,
+                    cancellationToken)));
+            var availableCount = availability.Count(value =>
+                value.State == ProviderCapacityState.Available);
+            var unavailableCount = availability.Count(value =>
+                value.State == ProviderCapacityState.UnavailableUntil);
+            var notice = $"Checked {availability.Length} enabled agents: " +
+                $"{availableCount} available, {unavailableCount} unavailable.";
+            Response.Headers["HX-Trigger-After-Swap"] = "wrighty:refresh";
+            return Partial(
+                "Shared/_Agents",
+                await AgentInventoryAsync(
+                    cancellationToken,
+                    notice,
+                    menuOpen: true));
+        }
+        catch (TrackerException exception)
+        {
+            Response.StatusCode = Status(exception);
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            return Partial(
+                "Shared/_Agents",
+                await AgentInventoryAsync(
+                    cancellationToken,
+                    errorCode: exception.Code,
+                    errorMessage: SafeMessage(exception),
+                    menuOpen: true));
         }
     }
 

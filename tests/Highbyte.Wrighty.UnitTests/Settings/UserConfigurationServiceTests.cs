@@ -176,6 +176,31 @@ public sealed class UserConfigurationServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task First_agent_toggle_materializes_detected_agents_then_stays_explicit()
+    {
+        var (service, store) = Create();
+        var before = await service.ReadAsync(CancellationToken.None);
+
+        var disabled = await service.MutateAsync(
+            before.Revision,
+            new AgentEnablementMutation("opencode", false, ["claude", "codex", "opencode"]),
+            false,
+            CancellationToken.None);
+
+        Assert.Equal(["claude", "codex"], disabled.After.Stored.EnabledAgents);
+        Assert.Equal("enabledAgents", Assert.Single(disabled.Changes).Id);
+
+        var reenabled = await service.MutateAsync(
+            disabled.After.Revision,
+            new AgentEnablementMutation("OpenCode", true, ["copilot"]),
+            false,
+            CancellationToken.None);
+
+        Assert.Equal(["claude", "codex", "opencode"], reenabled.After.Stored.EnabledAgents);
+        Assert.DoesNotContain("copilot", (await store.LoadAsync(CancellationToken.None)).EnabledAgents!);
+    }
+
+    [Fact]
     public async Task Profile_mappings_are_visible_here_but_not_editable_here()
     {
         // They belong to this scope and the console should say so, but editing them needs the model

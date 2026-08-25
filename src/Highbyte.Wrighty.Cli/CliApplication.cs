@@ -114,6 +114,15 @@ public sealed partial class CliApplication(
         {
             return;
         }
+        var enabledAgents = await EnabledAgentFilterAsync(cancellationToken);
+        if (enabledAgents is not null)
+        {
+            installations = installations
+                .Where(installation => installation.AgentSelection
+                    .Split(',')
+                    .Any(enabledAgents.Contains))
+                .ToArray();
+        }
 
         var styler = new WorkerTerminalStyler(terminals, WorkerColorMode.Auto);
         foreach (var group in installations
@@ -145,6 +154,26 @@ public sealed partial class CliApplication(
                 $"'{installation.Path}' is {installation.State.ToString().ToLowerInvariant()}{versions}. " +
                 $"Run '{command}'.");
         }
+    }
+
+    private async Task<HashSet<string>?> EnabledAgentFilterAsync(
+        CancellationToken cancellationToken)
+    {
+        if (userSettings is null)
+        {
+            return null;
+        }
+
+        var settings = await userSettings.LoadAsync(cancellationToken);
+        if (runtimes is null)
+        {
+            return settings.EnabledAgents?.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+
+        return runtimes.Snapshot().Agents
+            .Where(runtime => settings.IsAgentEnabled(runtime.Agent, runtime.Installed))
+            .Select(runtime => runtime.Agent)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     private async Task<IReadOnlyList<WebSkillInstallation>?> InspectSkillsAsync(
@@ -874,6 +903,10 @@ public sealed partial class CliApplication(
         await output.WriteLineAsync(
             $"  hostLabel: {effectiveHost}" +
             (string.IsNullOrWhiteSpace(settings.HostLabel) ? " (default)" : string.Empty));
+        var enabledAgents = EffectiveEnabledAgents(settings);
+        await output.WriteLineAsync(
+            $"  enabledAgents: {(enabledAgents.Length == 0 ? "none" : string.Join(", ", enabledAgents))}" +
+            (settings.EnabledAgents is null ? " (detected agents; default)" : string.Empty));
         if (settings.WorkerProfiles.Count == 0)
         {
             await output.WriteLineAsync("  workerProfiles: built-in tiers (default)");
@@ -955,7 +988,7 @@ public sealed partial class CliApplication(
                 "  Warning: a typed save will normalize comments or trailing commas and requires --yes.");
     }
 
-    private static object UserConfigurationDto(
+    private object UserConfigurationDto(
         Settings.UserSettingsStore store,
         Settings.UserSettings settings)
     {
@@ -974,6 +1007,14 @@ public sealed partial class CliApplication(
                         ? "wrighty-default"
                         : "user"
                 },
+                enabledAgents = new
+                {
+                    storedValue = settings.EnabledAgents,
+                    effectiveValue = EffectiveEnabledAgents(settings),
+                    source = settings.EnabledAgents is null
+                        ? "detected-agents"
+                        : "user"
+                },
                 workerProfiles = new
                 {
                     storedValue = settings.WorkerProfiles.Count == 0
@@ -987,6 +1028,13 @@ public sealed partial class CliApplication(
             }
         };
     }
+
+    private string[] EffectiveEnabledAgents(Settings.UserSettings settings) =>
+        (settings.EnabledAgents ?? runtimes?.Snapshot().InstalledAgents
+            .Select(runtime => runtime.Agent).ToArray() ?? [])
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Order(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
 
     private static string EffectiveHost(Settings.UserSettings settings) =>
         string.IsNullOrWhiteSpace(settings.HostLabel)

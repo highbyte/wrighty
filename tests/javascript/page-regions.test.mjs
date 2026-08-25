@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   readyPageRegions,
   readyRegionSelectors,
+  refreshAgentsInventory,
   refreshVisibleOperations,
   revealWorkerProcesses
 } from "../../src/Highbyte.Wrighty.Web/Assets/page-regions.mjs";
@@ -36,6 +37,7 @@ test("every rendered region is processed and readied", () => {
   const doc = documentWith({
     "#board-content": region("board", events),
     "#worker-summary-region": region("workers", events),
+    "#agents-region": region("agents", events),
     "#provider-capacity-region": region("capacity", events),
     "#skill-status-region": region("skills", events),
     "#operations-content": region("operations", events),
@@ -44,10 +46,11 @@ test("every rendered region is processed and readied", () => {
 
   readyPageRegions(doc, recordingHtmx(processed));
 
-  assert.deepEqual(processed, ["board", "workers", "capacity", "skills", "operations", "settings"]);
+  assert.deepEqual(processed, ["board", "workers", "agents", "capacity", "skills", "operations", "settings"]);
   assert.deepEqual(events, [
     "board:wrighty:ready",
     "workers:wrighty:ready",
+    "agents:wrighty:ready",
     "capacity:wrighty:ready",
     "skills:wrighty:ready",
     "operations:wrighty:ready",
@@ -63,6 +66,7 @@ test("a page without a board still readies the regions it does render", () => {
   const processed = [];
   const doc = documentWith({
     "#worker-summary-region": region("workers", events),
+    "#agents-region": region("agents", events),
     "#provider-capacity-region": region("capacity", events),
     "#skill-status-region": region("skills", events),
     "#operations-content": region("operations", events)
@@ -70,9 +74,10 @@ test("a page without a board still readies the regions it does render", () => {
 
   readyPageRegions(doc, recordingHtmx(processed));
 
-  assert.deepEqual(processed, ["workers", "capacity", "skills", "operations"]);
+  assert.deepEqual(processed, ["workers", "agents", "capacity", "skills", "operations"]);
   assert.deepEqual(events, [
     "workers:wrighty:ready",
+    "agents:wrighty:ready",
     "capacity:wrighty:ready",
     "skills:wrighty:ready",
     "operations:wrighty:ready"
@@ -115,6 +120,7 @@ test("the selector list is the documented region order", () => {
   assert.deepEqual(readyRegionSelectors, [
     "#board-content",
     "#worker-summary-region",
+    "#agents-region",
     "#provider-capacity-region",
     "#skill-status-region",
     "#operations-content",
@@ -132,6 +138,25 @@ test("visible Operations dispatches its polling event", () => {
 
   assert.equal(refreshVisibleOperations(doc), true);
   assert.deepEqual(events, ["operations:wrighty:operations-refresh"]);
+});
+
+test("Agents polling continues during probes but pauses during mutations", () => {
+  const events = [];
+  const agents = region("agents", events);
+  agents.matches = () => false;
+  agents.querySelector = selector => {
+    assert.equal(selector, ".htmx-request:not([data-agent-probe-request])");
+    return null;
+  };
+  const doc = documentWith({ "#agents-region": agents });
+  doc.visibilityState = "visible";
+
+  assert.equal(refreshAgentsInventory(doc), true);
+  assert.deepEqual(events, ["agents:wrighty:refresh"]);
+
+  agents.querySelector = () => ({ kind: "toggle" });
+  assert.equal(refreshAgentsInventory(doc), false);
+  assert.deepEqual(events, ["agents:wrighty:refresh"]);
 });
 
 test("worker navigation focuses the stable tab and scrolls the worker controls", () => {

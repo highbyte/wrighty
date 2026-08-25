@@ -230,8 +230,8 @@
                   </select>
                 </label>
                 <label>
-                  <span>Implementation result</span>
-                  <select name="failureKind" aria-label="Implementation result for @agent"
+                  <span>Implementation launch result</span>
+                  <select name="failureKind" aria-label="Implementation launch result for @agent"
                           disabled="@pretendNotInstalled">
                     <option value="" selected="@(selectedToken is null or "")">Use real result</option>
                     <optgroup label="Uses retry / handoff policy">
@@ -270,6 +270,8 @@
                 </label>
                 <button type="submit" data-settings-save disabled="@(!rowDraft)">Save<span class="visually-hidden"> @agent simulation</span></button>
                 <small id="agent-testing-retry-help-@agent" class="agent-testing-help">
+                  This affects implementation launches only; checks and capacity probes use the
+                  real agent CLI.
                   Usage exhausted and rate limited use the repository recovery policy: @recoveryDescription.
                   Authentication, billing, and permission failures stop for operator attention;
                   the remaining choices use ordinary failure handling. An availability override

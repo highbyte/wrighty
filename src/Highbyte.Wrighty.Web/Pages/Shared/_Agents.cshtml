@@ -1,0 +1,357 @@
+@model AgentInventoryPageModel
+@{
+  var hasIssues = Model.AttentionCount > 0 || Model.ErrorCode is not null;
+  var detectedCount = Model.Agents.Count(agent => agent.Detected);
+  var activeProbeCount = Model.Agents.Count(agent => agent.ProbeInProgress);
+  var availableCount = Model.Agents.Count(agent =>
+    agent.Enabled && agent.Capacity?.State == ProviderCapacityState.Available);
+  hasIssues = hasIssues || Model.EnabledCount == 0 || detectedCount == 0 || activeProbeCount > 0;
+  var probeCount = Model.Agents.Count(agent => agent.Enabled && agent.Detected && agent.Capacity is not null);
+  var missingSkillCount = Model.Agents.Count(agent =>
+    agent.Enabled && agent.Detected && agent.Skill?.IsMissing == true);
+  var outdatedSkillCount = Model.Agents.Count(agent =>
+    agent.Skill?.Installations.Any(installation =>
+      installation.State == WebSkillInstallationState.Outdated) == true);
+  var canUninstallUser = Model.Agents.Any(agent => agent.Skill?.Installations.Any(installation =>
+    installation.Scope == "user" && installation.State is
+      WebSkillInstallationState.Current or WebSkillInstallationState.Outdated) == true) &&
+    !Model.Agents.Any(agent => agent.Skill?.Installations.Any(installation =>
+      installation.Scope == "user" && installation.State is
+        WebSkillInstallationState.Modified or WebSkillInstallationState.Malformed) == true);
+  var canUninstallProject = Model.Agents.Any(agent => agent.Skill?.Installations.Any(installation =>
+    installation.Scope == "project" && installation.State is
+      WebSkillInstallationState.Current or WebSkillInstallationState.Outdated) == true) &&
+    !Model.Agents.Any(agent => agent.Skill?.Installations.Any(installation =>
+      installation.Scope == "project" && installation.State is
+        WebSkillInstallationState.Modified or WebSkillInstallationState.Malformed) == true);
+}
+<section id="agents-region"
+         data-revision="@Model.Revision"
+         hx-get="/?handler=Agents"
+         hx-trigger="wrighty:ready, wrighty:refresh"
+         hx-sync="#agents-region:replace"
+         hx-swap="outerHTML">
+  <details class="agents-menu@(hasIssues ? " has-issues" : " has-current")"
+           open="@(Model.MenuOpen ? "open" : null)">
+    <summary>
+      <span>Agents</span>
+      <span>
+        Available @availableCount/@Model.EnabledCount
+        @if (Model.AttentionCount > 0)
+        {
+          <text> · @Model.AttentionCount attention</text>
+        }
+        @if (activeProbeCount > 0)
+        {
+          <text> · @activeProbeCount probing</text>
+        }
+      </span>
+    </summary>
+    <div class="agents-popover">
+      <header class="agents-popover-header">
+        <div>
+          <strong>Agents on this computer</strong>
+          <span>@detectedCount detected · your agent selections apply to all repositories you use on this computer</span>
+        </div>
+        <div class="agents-quick-actions" aria-label="Agent actions">
+          <form hx-post="/?handler=ProbeEnabledAgents"
+                hx-target="#agents-region"
+                hx-swap="outerHTML"
+                hx-sync="this:drop"
+                hx-request='{"timeout":130000}'
+                hx-disabled-elt="find button"
+                data-agent-probe-request
+                data-confirm-title="Probe enabled agent capacities?"
+                data-confirm-message="This starts one small vendor request per enabled detected agent, may consume subscription usage, and does not claim a work item."
+                data-confirm-action="Probe">
+            @Html.AntiForgeryToken()
+            <button type="submit"
+                    class="button-compact"
+                    title="@(activeProbeCount > 0 ? "Wait for the active capacity probe to finish." : null)"
+                    disabled="@(probeCount == 0 || activeProbeCount > 0)">Probe</button>
+          </form>
+        </div>
+      </header>
+      @if (Model.Notice is not null)
+      {
+        <p class="notice" role="status">@Model.Notice</p>
+      }
+      @if (Model.ErrorCode is not null)
+      {
+        <p class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</p>
+      }
+      <div class="agent-table" role="table" aria-label="Detected and supported agents">
+        <div class="agent-table-header" role="row">
+          <span role="columnheader">Agent</span>
+          <span role="columnheader">Use</span>
+          <span role="columnheader">CLI</span>
+          <span role="columnheader">Capacity</span>
+          <span role="columnheader">Skill</span>
+          <span role="columnheader"><span class="visually-hidden">Actions</span></span>
+        </div>
+        @foreach (var agent in Model.Agents)
+        {
+          var capacityLabel = !agent.Detected
+            ? "Not detected"
+            : agent.Capacity is null
+              ? "Not supported"
+              : agent.ProbeInProgress
+                ? "Probing"
+                : agent.CapacityUnavailable
+                  ? "Unavailable"
+                  : "Available";
+          var skillLabel = agent.Skill is null
+            ? "Not supported"
+            : agent.Skill.IsDuplicate
+              ? "Duplicate"
+              : agent.Skill.IsMissing
+                ? "Missing"
+                : agent.Skill.Installations.Any(installation =>
+                    installation.State == WebSkillInstallationState.Malformed)
+                  ? "Malformed"
+                  : agent.Skill.Installations.Any(installation =>
+                      installation.State == WebSkillInstallationState.Modified)
+                    ? "Modified"
+                    : agent.Skill.Installations.Any(installation =>
+                        installation.State == WebSkillInstallationState.Outdated)
+                      ? "Outdated"
+                      : "Current";
+          var detailsId = $"agent-details-{agent.Agent}";
+          var nextEnabled = agent.Enabled ? "false" : "true";
+          var canUpdateSkill = agent.Skill?.Installations.Any(installation =>
+            installation.State == WebSkillInstallationState.Outdated) == true;
+          <div class="agent-table-row@(agent.NeedsAttention ? " needs-attention" : null)"
+               role="row"
+               data-agent-id="@agent.Agent">
+            <span class="agent-name-cell" role="cell">
+              <strong>@agent.AgentLabel</strong>
+              <small>@agent.Agent</small>
+            </span>
+            <span role="cell">
+              <form hx-post="/?handler=SetAgentEnabled"
+                    hx-target="#agents-region"
+                    hx-swap="outerHTML"
+                    hx-disabled-elt="find button">
+                @Html.AntiForgeryToken()
+                <input type="hidden" name="agent" value="@agent.Agent">
+                <input type="hidden" name="enabled" value="@nextEnabled">
+                <input type="hidden" name="revision" value="@Model.UserConfigurationRevision">
+                <button type="submit"
+                        class="agent-enable-switch@(agent.Enabled ? " is-enabled" : null)"
+                        role="switch"
+                        aria-checked="@agent.Enabled.ToString().ToLowerInvariant()"
+                        aria-label="@(agent.Enabled ? $"Disable {agent.AgentLabel}" : $"Enable {agent.AgentLabel}")">
+                  <span aria-hidden="true"></span>
+                  <span>@(agent.Enabled ? "Enabled" : "Disabled")</span>
+                </button>
+              </form>
+            </span>
+            <span role="cell" title="@agent.ExecutablePath">
+              <span class="agent-state @(agent.Detected ? "state-current" : "state-muted")">
+                @(agent.Detected ? "Detected" : "Missing")
+              </span>
+            </span>
+            <span class="agent-capacity-cell" role="cell">
+              <span class="agent-state @(agent.CapacityUnavailable || agent.ProbeInProgress ? "state-warning" : agent.Capacity is null ? "state-muted" : "state-current")">@capacityLabel</span>
+              @if (agent.Detected && agent.Capacity is not null)
+              {
+                <form hx-post="/?handler=ProbeProvider"
+                      hx-target="#agents-region"
+                      hx-swap="outerHTML"
+                      hx-sync="this:drop"
+                      hx-request='{"timeout":130000}'
+                      hx-disabled-elt="find button"
+                      data-agent-probe-request
+                      data-confirm-title="Probe @agent.AgentLabel capacity?"
+                      data-confirm-message="This starts a small vendor request, may consume subscription usage, and does not claim a work item."
+                      data-confirm-action="Probe @agent.AgentLabel">
+                  @Html.AntiForgeryToken()
+                  <input type="hidden" name="agent" value="@agent.Agent">
+                  <input type="hidden" name="surface" value="agents">
+                  <button type="submit"
+                          id="agent-probe-@agent.Agent"
+                          class="button-link-compact"
+                          disabled="@(!agent.Enabled || agent.ProbeInProgress)">Probe</button>
+                </form>
+              }
+            </span>
+            <span role="cell">
+              <span class="agent-state @(skillLabel is "Current" ? "state-current" : skillLabel is "Not supported" ? "state-muted" : "state-warning")">@skillLabel</span>
+            </span>
+            <span class="agent-action-cell" role="cell">
+              @if (agent.Skill is not null)
+              {
+                @if (canUpdateSkill)
+                {
+                  <form hx-post="/?handler=UpdateAgentSkill" hx-target="#agents-region" hx-swap="outerHTML" hx-disabled-elt="find button">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="agentSelection" value="@agent.Skill.AgentSelection">
+                    <input type="hidden" name="surface" value="agents">
+                    <button type="submit"
+                            id="agent-update-skill-@agent.Agent"
+                            class="button-compact button-warning"
+                            disabled="@(!agent.Enabled)">Update skill</button>
+                  </form>
+                }
+                <button type="button"
+                        id="agent-manage-skill-@agent.Agent"
+                        class="button-compact"
+                        data-agent-details-toggle="@detailsId"
+                        aria-expanded="false"
+                        aria-controls="@detailsId"
+                        disabled="@(!agent.Enabled)">Manage skill</button>
+              }
+            </span>
+          </div>
+          @if (agent.Skill is { } skill)
+          {
+            <section id="@detailsId" class="agent-expanded-row" data-agent-details hidden>
+              <header>
+                <div>
+                  <strong>@agent.AgentLabel skill</strong>
+                  @if (skill.AgentSelection.Contains(','))
+                  {
+                    <span>This physical installation is shared by @skill.AgentLabel.</span>
+                  }
+                </div>
+                <button type="button" class="button-link-compact" data-agent-details-close="@detailsId">Close</button>
+              </header>
+              <section class="agent-skill-manager" data-agent-skill-manager>
+                <header>
+                  <label for="@detailsId-scope">Skill location</label>
+                  <select id="@detailsId-scope"
+                          class="select-compact"
+                          data-agent-skill-manager-scope
+                          disabled="@(!agent.Enabled)">
+                    <option value="user" selected>User</option>
+                    <option value="project">Project</option>
+                  </select>
+                </header>
+                @foreach (var installation in skill.Installations)
+                {
+                  var scopeLabel = installation.Scope == "user" ? "User" : "Project";
+                  var installed = installation.State != WebSkillInstallationState.Missing;
+                  var activeScope = installation.Scope == "user";
+                  var scopeAriaHidden = activeScope ? "false" : "true";
+                  <div class="agent-skill-scope-panel@(activeScope ? " is-active" : null)"
+                       data-agent-skill-scope-panel="@installation.Scope"
+                       aria-hidden="@scopeAriaHidden">
+                    <header>
+                      <span class="agent-state @(installation.State == WebSkillInstallationState.Current ? "state-current" : installation.State == WebSkillInstallationState.Missing ? "state-muted" : "state-warning")">@installation.State</span>
+                    </header>
+                    <code title="@installation.Path">@installation.Path</code>
+                    <span>
+                      @if (installed)
+                      {
+                        <text>Installed @(installation.InstalledVersion ?? "unknown"); bundled @installation.BundledVersion.</text>
+                      }
+                      else
+                      {
+                        <text>Not installed.</text>
+                      }
+                    </span>
+                    <div class="agent-skill-actions">
+                      @if (skill.IsMissing)
+                      {
+                        <form hx-post="/?handler=InstallSkill" hx-target="#agents-region" hx-swap="outerHTML" hx-disabled-elt="find button">
+                          @Html.AntiForgeryToken()
+                          <input type="hidden" name="agentSelection" value="@skill.AgentSelection">
+                          <input type="hidden" name="scope" value="@installation.Scope">
+                          <input type="hidden" name="surface" value="agents">
+                          <button type="submit" class="button-compact" disabled="@(!agent.Enabled)">Install</button>
+                        </form>
+                      }
+                      else if (installation.State == WebSkillInstallationState.Outdated)
+                      {
+                        <form hx-post="/?handler=UpdateSkill" hx-target="#agents-region" hx-swap="outerHTML" hx-disabled-elt="find button">
+                          @Html.AntiForgeryToken()
+                          <input type="hidden" name="agentSelection" value="@skill.AgentSelection">
+                          <input type="hidden" name="scope" value="@installation.Scope">
+                          <input type="hidden" name="surface" value="agents">
+                          <button type="submit" class="button-compact" disabled="@(!agent.Enabled)">Update</button>
+                        </form>
+                      }
+                      @if (installation.State is WebSkillInstallationState.Current or WebSkillInstallationState.Outdated)
+                      {
+                        <form hx-post="/?handler=UninstallSkill"
+                              hx-target="#agents-region"
+                              hx-swap="outerHTML"
+                              hx-disabled-elt="find button"
+                              data-confirm-title="Uninstall the @installation.Scope skill for @skill.AgentLabel?"
+                              data-confirm-message="This removes the recognized Wrighty skill files at @installation.Path."
+                              data-confirm-action="Uninstall">
+                          @Html.AntiForgeryToken()
+                          <input type="hidden" name="agentSelection" value="@skill.AgentSelection">
+                          <input type="hidden" name="scope" value="@installation.Scope">
+                          <input type="hidden" name="surface" value="agents">
+                          <button type="submit" class="button-compact danger" disabled="@(!agent.Enabled)">Uninstall</button>
+                        </form>
+                      }
+                      @if (installation.State is WebSkillInstallationState.Modified or WebSkillInstallationState.Malformed)
+                      {
+                        <span>Inspect with <code>wrighty skill check</code>; the web console never forces changes.</span>
+                      }
+                      @if (installation.State == WebSkillInstallationState.Missing && !skill.IsMissing)
+                      {
+                        <span>The skill is installed at the other location. Uninstall it there before installing here.</span>
+                      }
+                    </div>
+                  </div>
+                }
+              </section>
+            </section>
+          }
+        }
+      </div>
+      <footer class="agents-skill-bulk">
+        <div class="agents-skill-bulk-copy">
+          <strong>Skills for all agents</strong>
+          <span>The selected location applies to install and uninstall. Update keeps each skill in its current location.</span>
+        </div>
+        <div class="agents-skill-bulk-actions">
+          <label class="visually-hidden" for="agents-skill-scope">Skill location</label>
+          <select id="agents-skill-scope" name="scope" class="select-compact" data-agent-skill-scope>
+            <option value="user" selected data-can-uninstall="@canUninstallUser.ToString().ToLowerInvariant()">User skills</option>
+            <option value="project" data-can-uninstall="@canUninstallProject.ToString().ToLowerInvariant()">Project skills</option>
+          </select>
+          <form hx-post="/?handler=MaintainAllSkills" hx-target="#agents-region" hx-swap="outerHTML" hx-disabled-elt="find button" data-agent-skill-scope-form>
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="surface" value="agents">
+            <input type="hidden" name="operation" value="install">
+            <input type="hidden" name="scope" value="user" data-agent-skill-scope-value>
+            <button type="submit" class="button-compact button-warning" disabled="@(missingSkillCount == 0)">Install missing</button>
+          </form>
+          <form hx-post="/?handler=MaintainAllSkills" hx-target="#agents-region" hx-swap="outerHTML" hx-disabled-elt="find button">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="surface" value="agents">
+            <input type="hidden" name="operation" value="update">
+            <button type="submit" class="button-compact button-warning" disabled="@(outdatedSkillCount == 0)">Update skills</button>
+          </form>
+          <form hx-post="/?handler=MaintainAllSkills"
+                hx-target="#agents-region"
+                hx-swap="outerHTML"
+                hx-disabled-elt="find button"
+                data-agent-skill-scope-form
+                data-confirm-title="Uninstall skills from the selected location?"
+                data-confirm-message="This removes every recognized unmodified Wrighty skill from the selected location, including shared physical targets."
+                data-confirm-action="Uninstall skills"
+                data-confirm-tone="danger">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="surface" value="agents">
+            <input type="hidden" name="operation" value="uninstall">
+            <input type="hidden" name="scope" value="user" data-agent-skill-scope-value>
+            <button type="submit" class="button-compact danger" data-agent-skills-uninstall disabled="@(!canUninstallUser)">Uninstall skills</button>
+          </form>
+        </div>
+      </footer>
+    </div>
+  </details>
+  @if (Model.Notice is not null)
+  {
+    <template data-page-notice data-kind="notice" data-message="@Model.Notice"></template>
+  }
+  else if (Model.ErrorCode is not null)
+  {
+    <template data-page-notice data-kind="error" data-message="@($"{Model.ErrorCode}: {Model.ErrorMessage}")"></template>
+  }
+</section>

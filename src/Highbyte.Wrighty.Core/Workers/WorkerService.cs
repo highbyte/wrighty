@@ -602,6 +602,7 @@ public sealed class WorkerService(
             AgentContextSource.ExplicitOption,
             ClaimantKind: kind,
             ClaimantId: claimantId);
+        var agentSettings = await LoadUserSettingsAsync(cancellationToken);
         var providerStates = await ProviderStatesAsync(cancellationToken);
         await using var workspaceLease = options.WorkspaceMode == WorkspaceMode.Current
             ? await workspaceLocks.AcquireAsync(repositoryPath, cancellationToken)
@@ -615,7 +616,11 @@ public sealed class WorkerService(
             detail =>
             {
                 var evaluation = EvaluateCandidate(
-                    detail, options, config.EffectiveWorker.DefaultAgent, diagnostics);
+                    detail,
+                    options,
+                    config.EffectiveWorker.DefaultAgent,
+                    agentSettings,
+                    diagnostics);
                 if (!evaluation.Eligible)
                     return false;
                 if (providerStates.TryGetValue(evaluation.Agent!, out var provider) &&
@@ -802,6 +807,7 @@ public sealed class WorkerService(
     {
         var items = await tracker.ListAsync(
             config, new ListWorkItemsRequest(status, null), cancellationToken);
+        var agentSettings = await LoadUserSettingsAsync(cancellationToken);
         PreflightCandidate? first = null;
         var readyAgents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var summary in items)
@@ -809,7 +815,11 @@ public sealed class WorkerService(
             var detail = await tracker.GetAsync(config, summary.Id, cancellationToken);
             var candidate = ProjectWorkerQueueAuthorization(config, detail, status);
             var evaluation = EvaluateCandidate(
-                candidate, options, config.EffectiveWorker.DefaultAgent, diagnostics);
+                candidate,
+                options,
+                config.EffectiveWorker.DefaultAgent,
+                agentSettings,
+                diagnostics);
             if (!evaluation.Eligible)
                 continue;
             if (await IsProviderBlockedForFreshAsync(
@@ -1032,10 +1042,12 @@ public sealed class WorkerService(
         var detail = await tracker.GetAsync(config, id, cancellationToken);
         EnsureFreshStatus(config, options, detail);
         var diagnostics = new WorkerCandidateDiagnostics(detail.Status ?? "(none)");
+        var agentSettings = await LoadUserSettingsAsync(cancellationToken);
         var evaluation = EvaluateCandidate(
             detail,
             options,
             config.EffectiveWorker.DefaultAgent,
+            agentSettings,
             diagnostics);
         if (!evaluation.Eligible)
         {
@@ -1078,10 +1090,12 @@ public sealed class WorkerService(
         var detail = await tracker.GetAsync(config, id, cancellationToken);
         EnsureFreshStatus(config, options, detail);
         var diagnostics = new WorkerCandidateDiagnostics(detail.Status ?? "(none)");
+        var agentSettings = await LoadUserSettingsAsync(cancellationToken);
         var evaluation = EvaluateCandidate(
             detail,
             options,
             config.EffectiveWorker.DefaultAgent,
+            agentSettings,
             diagnostics);
         if (!evaluation.Eligible)
         {
@@ -5874,6 +5888,7 @@ public sealed class WorkerService(
         var readyAgents = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var preview = new DryRunPreviewContext(
             config, options, repositoryPath, readyAgents, emit);
+        var agentSettings = await LoadUserSettingsAsync(cancellationToken);
         foreach (var summary in items)
         {
             var detail = await tracker.GetAsync(config, summary.Id, cancellationToken);
@@ -5881,6 +5896,7 @@ public sealed class WorkerService(
                 detail,
                 options,
                 config.EffectiveWorker.DefaultAgent,
+                agentSettings,
                 diagnostics);
             if (!evaluation.Eligible)
                 continue;
@@ -5981,6 +5997,7 @@ public sealed class WorkerService(
         WorkItemDetail detail,
         WorkerOptions options,
         string? configuredAgent,
+        Settings.UserSettings agentSettings,
         WorkerCandidateDiagnostics diagnostics)
     {
         diagnostics.StatusItems++;
@@ -6016,6 +6033,19 @@ public sealed class WorkerService(
                         decision.Agent,
                         decision.AgentSource,
                         Unavailable: true);
+                }
+                if (!Settings.AgentEnablementPolicy.AllowsManagedWork(
+                    agentSettings,
+                    decision.Agent!,
+                    options.Agent,
+                    detected: true))
+                {
+                    diagnostics.RecordDisabledAgent(decision.Agent!);
+                    return new CandidateEvaluation(
+                        false,
+                        decision.Agent,
+                        decision.AgentSource,
+                        Disabled: true);
                 }
                 diagnostics.Eligible++;
                 return new CandidateEvaluation(
@@ -6057,6 +6087,21 @@ public sealed class WorkerService(
 
     private void ThrowIfAgentUnavailable(CandidateEvaluation evaluation, WorkItemId id)
     {
+        if (evaluation.Disabled && evaluation.Agent is not null)
+        {
+            throw new TrackerException(
+                "AGENT_DISABLED",
+                $"Resolved agent '{evaluation.Agent}' for work item '{id}' is disabled in your " +
+                "user settings. Enable it in the Agents menu or choose an explicit --agent " +
+                "override.",
+                7,
+                new Dictionary<string, object?>
+                {
+                    ["agent"] = evaluation.Agent,
+                    ["itemId"] = id.Value,
+                    ["source"] = evaluation.AgentSource
+                });
+        }
         if (!evaluation.Unavailable || evaluation.Agent is null)
             return;
         throw AgentNotInstalled(
@@ -6093,6 +6138,12 @@ public sealed class WorkerService(
 
     private static string? NormalizeAgent(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
+
+    private Task<Settings.UserSettings> LoadUserSettingsAsync(
+        CancellationToken cancellationToken) =>
+        userSettings is null
+            ? Task.FromResult(new Settings.UserSettings())
+            : userSettings.LoadAsync(cancellationToken);
 
     private static ClaimantKind ParseClaimantKind(string value) => value.ToLowerInvariant() switch
     {
@@ -6139,7 +6190,8 @@ public sealed class WorkerService(
         bool Eligible,
         string? Agent = null,
         string? AgentSource = null,
-        bool Unavailable = false)
+        bool Unavailable = false,
+        bool Disabled = false)
     {
         public static CandidateEvaluation Ineligible { get; } = new(false);
     }
@@ -6248,9 +6300,12 @@ public sealed class WorkerService(
         public int Claimable { get; set; }
         public int ProviderUnavailable { get; private set; }
         public int UnavailableAgent { get; private set; }
+        public int DisabledAgent { get; private set; }
         public Dictionary<string, ProviderCapacity> UnavailableProviders { get; } =
             new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, int> UnavailableAgents { get; } =
+            new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, int> DisabledAgents { get; } =
             new(StringComparer.OrdinalIgnoreCase);
 
         public void RecordProviderUnavailable(ProviderCapacity availability)
@@ -6263,6 +6318,12 @@ public sealed class WorkerService(
         {
             UnavailableAgent++;
             UnavailableAgents[agent] = UnavailableAgents.GetValueOrDefault(agent) + 1;
+        }
+
+        public void RecordDisabledAgent(string agent)
+        {
+            DisabledAgent++;
+            DisabledAgents[agent] = DisabledAgents.GetValueOrDefault(agent) + 1;
         }
 
         public string UnavailableAgentSignature => string.Join(
@@ -6316,6 +6377,7 @@ public sealed class WorkerService(
                    filters +
                    $"{UnresolvedAgent} opted-in {Plural(UnresolvedAgent, "item")} without a supported resolved agent; " +
                    $"{UnavailableAgent} otherwise eligible {Plural(UnavailableAgent, "item")} with an unavailable local agent; " +
+                   $"{DisabledAgent} otherwise eligible {Plural(DisabledAgent, "item")} assigned to a disabled agent; " +
                    $"{ProviderUnavailable} otherwise eligible {Plural(ProviderUnavailable, "item")} blocked by provider capacity; " +
                    $"{contended} otherwise eligible " +
                    Plural(
@@ -6343,6 +6405,7 @@ public sealed class WorkerService(
                    filters +
                    $"{UnresolvedAgent} opted-in {Plural(UnresolvedAgent, "item")} without a supported resolved agent; " +
                    $"{UnavailableAgent} otherwise eligible {Plural(UnavailableAgent, "item")} with an unavailable local agent; " +
+                   $"{DisabledAgent} otherwise eligible {Plural(DisabledAgent, "item")} assigned to a disabled agent; " +
                    $"{ProviderUnavailable} otherwise eligible {Plural(ProviderUnavailable, "item")} blocked by provider capacity; " +
                    $"{Claimed} otherwise eligible {Plural(Claimed, "item")} currently claimed; " +
                    $"{Claimable} currently claimable. Candidates must be active in '{status}', " +
@@ -6365,6 +6428,7 @@ public sealed class WorkerService(
                    $"{PausedOrQueued} paused or explicitly queued {Plural(PausedOrQueued, "item")}; " +
                    $"{UnresolvedAgent} without a supported resolved agent; " +
                    $"{UnavailableAgent} with an unavailable local agent; " +
+                   $"{DisabledAgent} assigned to a disabled agent; " +
                    $"{ProviderUnavailable} blocked by provider capacity; " +
                    $"{Claimed} currently claimed{filters}). " +
                    $"Candidates must be active in '{status}', allow automatic execution, match every " +
