@@ -3,18 +3,14 @@ using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.Workers;
 
-/// <summary>A fourth-agent fixture used to prove generic integration paths.</summary>
-internal sealed class FutureAgentAdapter :
-    IAgentAdapter,
-    IAgentResumeAdapter,
-    IAgentInteractiveAdapter,
-    IAgentDesktopAdapter
+/// <summary>Proves that fresh worker execution does not require optional session surfaces.</summary>
+internal sealed class FreshOnlyAgentAdapter(string agent = "fresh-agent") : IAgentAdapter
 {
     private readonly CodexAgentAdapter inner = new();
 
-    public string Agent => "future-agent";
+    public string Agent => agent;
 
-    public string ExecutableName => "future-agent";
+    public string ExecutableName => agent;
 
     public bool SupportsPreassignedHandle => inner.SupportsPreassignedHandle;
 
@@ -55,46 +51,8 @@ internal sealed class FutureAgentAdapter :
             Executable = ExecutableName
         };
 
-    public AgentInvocation BuildResumeWithPrompt(
-        SessionHandle handle,
-        Workspace workspace,
-        AgentPermissionProfile permissions,
-        string prompt) =>
-        inner.BuildResumeWithPrompt(handle, workspace, permissions, prompt) with
-        {
-            Executable = ExecutableName
-        };
-
-    public AgentInvocation BuildResume(
-        SessionHandle handle,
-        Workspace workspace,
-        string prompt,
-        AgentPermissionProfile permissions) =>
-        inner.BuildResume(handle, workspace, prompt, permissions) with
-        {
-            Executable = ExecutableName
-        };
-
     public AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace) =>
         inner.BuildCheck(handle, workspace) with { Executable = ExecutableName };
-
-    public LocalAgentInvocation BuildInteractiveInvocation(
-        SessionHandle handle,
-        Workspace workspace,
-        IReadOnlyDictionary<string, string>? environment = null) =>
-        inner.BuildInteractiveInvocation(handle, workspace, environment) with
-        {
-            Executable = ExecutableName
-        };
-
-    public DesktopLaunchAddress BuildDesktopLaunch(SessionHandle handle) =>
-        inner.BuildDesktopLaunch(handle) with { Vendor = Agent };
-
-    public string BuildInteractiveCommand(
-        SessionHandle handle,
-        Workspace workspace,
-        IReadOnlyDictionary<string, string>? environment = null) =>
-        inner.BuildInteractiveCommand(handle, workspace, environment);
 
     public string? TryExtractSessionId(string outputLine) =>
         inner.TryExtractSessionId(outputLine);

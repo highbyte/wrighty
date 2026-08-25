@@ -253,7 +253,7 @@ public sealed class AgentAdapterTests
         string agentType,
         string expectedVendorCommand)
     {
-        IAgentAdapter adapter = agentType switch
+        IAgentInteractiveAdapter adapter = agentType switch
         {
             "claude" => new ClaudeAgentAdapter(),
             "codex" => new CodexAgentAdapter(),
@@ -592,7 +592,7 @@ public sealed class AgentAdapterTests
     {
         var adapter = agentType switch
         {
-            "claude" => (IAgentAdapter)new ClaudeAgentAdapter(),
+            "claude" => (IAgentResumeAdapter)new ClaudeAgentAdapter(),
             "codex" => new CodexAgentAdapter(),
             "copilot" => new CopilotAgentAdapter(),
             _ => throw new InvalidOperationException()

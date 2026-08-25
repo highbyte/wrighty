@@ -76,7 +76,15 @@ public sealed record AgentIntegration(
     IAgentAdapter? ExecutionAdapter = null,
     IAgentModelDiscovery? ModelDiscovery = null,
     IAgentSessionExporter? SessionExporter = null,
-    IAgentContextDetector? ContextDetector = null);
+    IAgentContextDetector? ContextDetector = null)
+{
+    public IAgentResumeAdapter? ResumeAdapter => ExecutionAdapter as IAgentResumeAdapter;
+
+    public IAgentInteractiveAdapter? InteractiveAdapter =>
+        ExecutionAdapter as IAgentInteractiveAdapter;
+
+    public IAgentDesktopAdapter? DesktopAdapter => ExecutionAdapter as IAgentDesktopAdapter;
+}
 
 /// <summary>The authoritative catalogue of built-in agent integrations for one process.</summary>
 public sealed class AgentRegistry
@@ -223,6 +231,21 @@ public sealed class AgentRegistry
             AgentCapabilities.ContextDetection,
             integration.ContextDetector,
             "context detector");
+        ValidateService(
+            descriptor,
+            AgentCapabilities.Resume,
+            integration.ResumeAdapter,
+            "resume adapter");
+        ValidateService(
+            descriptor,
+            AgentCapabilities.InteractiveCli,
+            integration.InteractiveAdapter,
+            "interactive adapter");
+        ValidateService(
+            descriptor,
+            AgentCapabilities.DesktopLaunch,
+            integration.DesktopAdapter,
+            "Desktop adapter");
         ValidateMetadata(
             descriptor,
             AgentCapabilities.SkillInstallation,
@@ -239,16 +262,6 @@ public sealed class AgentRegistry
             descriptor.LocalLaunch,
             "local launch metadata");
 
-        if ((descriptor.Capabilities & (
-                AgentCapabilities.Resume |
-                AgentCapabilities.InteractiveCli |
-                AgentCapabilities.DesktopLaunch)) != 0 &&
-            integration.ExecutionAdapter is null)
-        {
-            throw new ArgumentException(
-                $"Agent '{descriptor.Id}' declares launch/session behavior without an execution adapter.",
-                nameof(integration));
-        }
         if (descriptor.SkillTarget is { } skillTarget)
         {
             RequireText(skillTarget.Id, nameof(skillTarget.Id));
@@ -422,7 +435,29 @@ public sealed class AgentRegistry
 /// <summary>Builds Wrighty's reviewed, compile-time set of built-in integrations.</summary>
 public static class BuiltInAgentRegistry
 {
-    private const AgentCapabilities Capabilities =
+    private const AgentCapabilities ClaudeCapabilities =
+        AgentCapabilities.WorkerExecution |
+        AgentCapabilities.Resume |
+        AgentCapabilities.ModelDiscovery |
+        AgentCapabilities.SessionExport |
+        AgentCapabilities.SkillInstallation |
+        AgentCapabilities.ContextDetection |
+        AgentCapabilities.InteractiveCli |
+        AgentCapabilities.DesktopLaunch |
+        AgentCapabilities.GitHubProjection;
+
+    private const AgentCapabilities CodexCapabilities =
+        AgentCapabilities.WorkerExecution |
+        AgentCapabilities.Resume |
+        AgentCapabilities.ModelDiscovery |
+        AgentCapabilities.SessionExport |
+        AgentCapabilities.SkillInstallation |
+        AgentCapabilities.ContextDetection |
+        AgentCapabilities.InteractiveCli |
+        AgentCapabilities.DesktopLaunch |
+        AgentCapabilities.GitHubProjection;
+
+    private const AgentCapabilities CopilotCapabilities =
         AgentCapabilities.WorkerExecution |
         AgentCapabilities.Resume |
         AgentCapabilities.ModelDiscovery |
@@ -478,7 +513,7 @@ public static class BuiltInAgentRegistry
         "Claude",
         "Anthropic",
         "claude",
-        Capabilities,
+        ClaudeCapabilities,
         new AgentSkillTarget("claude", ".claude/skills/wrighty", RequiresInvocationPolicy: true),
         new AgentProjection(
             "Claude",
@@ -498,7 +533,7 @@ public static class BuiltInAgentRegistry
         "Codex",
         "OpenAI",
         "codex",
-        Capabilities,
+        CodexCapabilities,
         new AgentSkillTarget("codex-copilot", ".agents/skills/wrighty"),
         new AgentProjection(
             "Codex",
@@ -517,7 +552,7 @@ public static class BuiltInAgentRegistry
         "Copilot",
         "GitHub",
         "copilot",
-        Capabilities,
+        CopilotCapabilities,
         new AgentSkillTarget("codex-copilot", ".agents/skills/wrighty"),
         new AgentProjection(
             "Copilot",

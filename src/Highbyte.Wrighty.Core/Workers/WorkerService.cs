@@ -1273,7 +1273,7 @@ public sealed class WorkerService(
         CancellationToken cancellationToken,
         bool operatorRequested = false)
     {
-        var adapter = adaptersByName[agentName];
+        var adapter = RequireResumeAdapter(adaptersByName[agentName]);
         var workspacePath = Path.GetFullPath(session.WorkspacePath!);
         var repository = Path.GetFullPath(repositoryPath);
         var workspace = new Workspace(workspacePath, !SamePath(workspacePath, repository));
@@ -1450,7 +1450,7 @@ public sealed class WorkerService(
     /// not a complete, owned, same-installation address. Kept out of <see cref="ResumeAsync"/> so
     /// that method stays within its complexity budget as launch stages are added to it.
     /// </summary>
-    private (string AgentName, IAgentAdapter Adapter, string SessionId, string WorkspacePath)
+    private (string AgentName, IAgentResumeAdapter Adapter, string SessionId, string WorkspacePath)
         ResolveResumeTarget(
         WorkerOptions options,
         WorkItemId id,
@@ -1486,8 +1486,19 @@ public sealed class WorkerService(
                 ownership.Agent,
                 repositoryPath,
                 ownership.WorkspacePath);
-        return (agentName, adapter, ownership.SessionId, ownership.WorkspacePath);
+        return (
+            agentName,
+            RequireResumeAdapter(adapter),
+            ownership.SessionId,
+            ownership.WorkspacePath);
     }
+
+    private static IAgentResumeAdapter RequireResumeAdapter(IAgentAdapter adapter) =>
+        adapter as IAgentResumeAdapter ??
+        throw new TrackerException(
+            "AGENT_RESUME_UNSUPPORTED",
+            $"Agent '{adapter.Agent}' does not support resuming a recorded session.",
+            3);
 
     private string ValidateRecordedSession(
         WorkerOptions options,
@@ -3017,7 +3028,7 @@ public sealed class WorkerService(
             return WorkerItemDisposition.Fenced;
         }
 
-        var implementation = adapter.BuildResumeWithPrompt(
+        var implementation = RequireResumeAdapter(adapter).BuildResumeWithPrompt(
             new SessionHandle(sessionId),
             run.Workspace,
             continuation.ImplementationPermissions,
@@ -3524,7 +3535,7 @@ public sealed class WorkerService(
     /// and for a session whose context this launch could not resolve.
     /// </summary>
     private AgentInvocation BuildResumeInvocation(
-        IAgentAdapter adapter,
+        IAgentResumeAdapter adapter,
         TrackerConfig config,
         WorkItemDetail detail,
         string agentName,
@@ -4024,8 +4035,9 @@ public sealed class WorkerService(
         string? sessionId,
         bool workspaceRemoved) =>
         !workspaceRemoved && Directory.Exists(workspace.Path) &&
-        !string.IsNullOrWhiteSpace(sessionId)
-            ? adapter.BuildInteractiveCommand(new SessionHandle(sessionId), workspace)
+        !string.IsNullOrWhiteSpace(sessionId) &&
+        adapter is IAgentInteractiveAdapter interactive
+            ? interactive.BuildInteractiveCommand(new SessionHandle(sessionId), workspace)
             : null;
 
     private async Task<WorkerItemDisposition> HandleFailedRunAsync(
@@ -5816,7 +5828,7 @@ public sealed class WorkerService(
                 continue;
             }
 
-            var invocation = adapter.BuildResume(
+            var invocation = RequireResumeAdapter(adapter).BuildResume(
                 new SessionHandle(queued.Session.SessionId!),
                 workspace,
                 WorkerPrompt.Append(

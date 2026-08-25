@@ -19,6 +19,9 @@ public sealed class AgentRegistryTests
             Assert.True(integration.Descriptor.Capabilities.HasFlag(
                 AgentCapabilities.WorkerExecution));
             Assert.NotNull(integration.ExecutionAdapter);
+            Assert.NotNull(integration.ResumeAdapter);
+            Assert.NotNull(integration.InteractiveAdapter);
+            Assert.NotNull(integration.DesktopAdapter);
             Assert.NotNull(integration.ModelDiscovery);
             Assert.NotNull(integration.SessionExporter);
             Assert.NotNull(integration.ContextDetector);
@@ -31,11 +34,11 @@ public sealed class AgentRegistryTests
             var handle = integration.ExecutionAdapter.CreateSessionHandle(
                 new WorkItemId("local:registry"),
                 "claim-generation");
-            var interactive = integration.ExecutionAdapter.BuildInteractiveInvocation(
+            var interactive = integration.InteractiveAdapter!.BuildInteractiveInvocation(
                 handle,
                 new Workspace(Path.GetTempPath()));
             Assert.Equal(integration.Descriptor.ExecutableName, interactive.Executable);
-            var desktop = integration.ExecutionAdapter.BuildDesktopLaunch(handle);
+            var desktop = integration.DesktopAdapter!.BuildDesktopLaunch(handle);
             Assert.Equal(
                 integration.Descriptor.LocalLaunch!.DesktopScheme,
                 desktop.Uri!.Scheme);
@@ -81,6 +84,44 @@ public sealed class AgentRegistryTests
         Assert.Empty(registry.WorkerIds);
         Assert.Empty(registry.WorkerDescriptors);
         Assert.Empty(registry.ExecutionAdapters);
+    }
+
+    [Fact]
+    public void A_fresh_only_worker_does_not_implement_optional_session_surfaces()
+    {
+        var descriptor = new AgentDescriptor(
+            "fresh-agent",
+            "Fresh Agent",
+            "Example",
+            "fresh-agent",
+            AgentCapabilities.WorkerExecution);
+        var registry = new AgentRegistry(
+            [new AgentIntegration(descriptor, new FreshOnlyAgentAdapter())]);
+
+        var integration = registry.GetRequired(descriptor.Id);
+
+        Assert.NotNull(integration.ExecutionAdapter);
+        Assert.Null(integration.ResumeAdapter);
+        Assert.Null(integration.InteractiveAdapter);
+        Assert.Null(integration.DesktopAdapter);
+        Assert.Equal([descriptor.Id], registry.WorkerIds);
+    }
+
+    [Fact]
+    public void Optional_session_capabilities_require_their_narrow_adapter_interfaces()
+    {
+        var freshOnly = new FreshOnlyAgentAdapter();
+        var descriptor = new AgentDescriptor(
+            freshOnly.Agent,
+            "Fresh Agent",
+            "Example",
+            freshOnly.ExecutableName,
+            AgentCapabilities.WorkerExecution | AgentCapabilities.Resume);
+
+        var error = Assert.Throws<ArgumentException>(() => new AgentRegistry(
+            [new AgentIntegration(descriptor, freshOnly)]));
+
+        Assert.Contains("declares Resume without a resume adapter", error.Message);
     }
 
     [Fact]
@@ -181,7 +222,8 @@ public sealed class AgentRegistryTests
         Assert.Equal(
             "future-agent",
             AgentExecutionCapabilities.ForAgent("future-agent", registry)!.Agent);
-        var adapter = registry.GetRequired("future-agent").ExecutionAdapter!;
+        var integration = registry.GetRequired("future-agent");
+        var adapter = integration.ExecutionAdapter!;
         var handle = adapter.CreateSessionHandle(
             new WorkItemId("local:future"),
             "claim-generation");
@@ -204,7 +246,7 @@ public sealed class AgentRegistryTests
         Assert.Equal("future-agent", adapter.BuildCheck(handle, workspace).Executable);
         Assert.Equal(
             "future-agent",
-            adapter.BuildResume(
+            integration.ResumeAdapter!.BuildResume(
                 handle,
                 workspace,
                 WorkerPrompt.ForResume(item.Id),

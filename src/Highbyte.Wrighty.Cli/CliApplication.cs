@@ -1009,7 +1009,7 @@ public sealed partial class CliApplication(
             throw new TrackerException("RESUME_WORKTREE_ABSENT",
                 $"The recorded worktree for '{tracker.FormatShort(config, id)}' is no longer present at " +
                 $"{session.WorkspacePath}; it was removed or is on another host, so the session cannot be resumed here.", 5);
-        var adapter = ResumeAdapterFor(session.Agent);
+        var adapter = InteractiveAdapterFor(session.Agent);
         var handle = new SessionHandle(session.SessionId);
         var workspace = new Workspace(session.WorkspacePath);
         var environment = TrackerEnvironment(config);
@@ -1042,10 +1042,15 @@ public sealed partial class CliApplication(
             await output.WriteLineAsync(resume);
     }
 
-    private IAgentAdapter ResumeAdapterFor(string agentType) =>
-        agents.Find(agentType)?.ExecutionAdapter ??
-        throw new TrackerException("AGENT_UNSUPPORTED",
-            $"Unsupported recorded agent '{agentType}'.", 3);
+    private IAgentInteractiveAdapter InteractiveAdapterFor(string agentType)
+    {
+        var integration = agents.Find(agentType) ??
+            throw new TrackerException("AGENT_UNSUPPORTED",
+                $"Unsupported recorded agent '{agentType}'.", 3);
+        return integration.InteractiveAdapter ??
+            throw new TrackerException("AGENT_INTERACTIVE_UNSUPPORTED",
+                $"Agent '{integration.Descriptor.Id}' does not support interactive CLI resume.", 3);
+    }
 
     private Command BuildWorkerCommand()
     {
@@ -4032,7 +4037,7 @@ public sealed partial class CliApplication(
         var environment = TrackerEnvironment(config);
         environment["WRIGHTY_CLAIMANT_ID"] = claim.ClaimantId!;
         environment["WRIGHTY_CLAIM_TOKEN"] = claim.ClaimToken!;
-        return ResumeAdapterFor(claim.Agent!).BuildInteractiveCommand(
+        return InteractiveAdapterFor(claim.Agent!).BuildInteractiveCommand(
             new SessionHandle(claim.SessionId!),
             new Workspace(workspace),
             environment);

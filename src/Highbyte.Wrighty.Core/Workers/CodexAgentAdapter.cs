@@ -4,7 +4,11 @@ using static Highbyte.Wrighty.Workers.AgentFlags;
 
 namespace Highbyte.Wrighty.Workers;
 
-public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAgentAdapter
+public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) :
+    IAgentAdapter,
+    IAgentResumeAdapter,
+    IAgentInteractiveAdapter,
+    IAgentDesktopAdapter
 {
     private const string SandboxFlag = "--sandbox";
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
@@ -202,4 +206,3 @@ public sealed class CodexAgentAdapter(Func<DateTimeOffset>? clock = null) : IAge
     }
 
 }
-

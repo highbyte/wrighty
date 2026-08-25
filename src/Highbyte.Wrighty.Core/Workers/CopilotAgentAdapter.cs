@@ -6,7 +6,11 @@ namespace Highbyte.Wrighty.Workers;
 
 public sealed class CopilotAgentAdapter(
     Func<DateTimeOffset>? clock = null,
-    string? shareDirectory = null) : IAgentAdapter
+    string? shareDirectory = null) :
+    IAgentAdapter,
+    IAgentResumeAdapter,
+    IAgentInteractiveAdapter,
+    IAgentDesktopAdapter
 {
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
@@ -246,4 +250,3 @@ public sealed class CopilotAgentAdapter(
     private static AgentInvocation Invocation(Workspace workspace, IReadOnlyList<string> arguments) =>
         new("copilot", arguments, workspace.Path, new Dictionary<string, string>());
 }
-

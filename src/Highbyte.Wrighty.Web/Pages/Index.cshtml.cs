@@ -2753,7 +2753,7 @@ public sealed class IndexModel(
             value.Claim);
         var vendor = AgentDisplayName(agent);
         var unmanagedTerminal = IsUnmanagedTerminal(value.Item, value.Claim);
-        var desktop = adapter.BuildDesktopLaunch(new SessionHandle(sessionId))
+        var desktop = DesktopAddress(adapter, sessionId)
             .EnableExperimental(
                 state.Config.EffectiveWorker.AllowsExperimentalDesktopSession(agent));
         var hasCli = capabilities.CanLaunchCli &&
@@ -3259,10 +3259,15 @@ public sealed class IndexModel(
                 "TERMINAL_LAUNCH_UNSUPPORTED",
                 $"{AgentDisplayName(launch.Adapter.Agent)} CLI is not installed.",
                 3);
+        var interactive = launch.Adapter as IAgentInteractiveAdapter ??
+            throw new TrackerException(
+                "TERMINAL_LAUNCH_UNSUPPORTED",
+                $"{AgentDisplayName(launch.Adapter.Agent)} does not support interactive CLI resume.",
+                3);
 
         if (IsUnmanagedTerminal(launch.Item, launch.Claim))
         {
-            var unmanagedInvocation = launch.Adapter.BuildInteractiveInvocation(
+            var unmanagedInvocation = interactive.BuildInteractiveInvocation(
                 new SessionHandle(launch.Session.SessionId!),
                 new Workspace(launch.Session.WorkspacePath!),
                 TrackerEnvironment());
@@ -3281,7 +3286,7 @@ public sealed class IndexModel(
         var environment = TrackerEnvironment();
         environment["WRIGHTY_CLAIMANT_ID"] = handle.ClaimantId;
         environment["WRIGHTY_CLAIM_TOKEN"] = handle.ClaimToken!;
-        var invocation = launch.Adapter.BuildInteractiveInvocation(
+        var invocation = interactive.BuildInteractiveInvocation(
             new SessionHandle(launch.Session.SessionId!),
             new Workspace(launch.Session.WorkspacePath!),
             environment);
@@ -3358,7 +3363,12 @@ public sealed class IndexModel(
                     capabilities.DesktopUnavailableReason ??
                     "Opening an agent Desktop session is unavailable on this platform.",
                     3);
-            var address = launch.Adapter.BuildDesktopLaunch(
+            var desktop = launch.Adapter as IAgentDesktopAdapter ??
+                throw new TrackerException(
+                    "DESKTOP_SESSION_UNSUPPORTED",
+                    $"{AgentDisplayName(launch.Adapter.Agent)} does not support Desktop session launch.",
+                    3);
+            var address = desktop.BuildDesktopLaunch(
                     new SessionHandle(launch.Session.SessionId!))
                 .EnableExperimental(
                     state.Config.EffectiveWorker.AllowsExperimentalDesktopSession(
@@ -3743,7 +3753,8 @@ public sealed class IndexModel(
             return null;
         }
 
-        var adapter = adaptersByName[claim.Agent!];
+        if (adaptersByName[claim.Agent!] is not IAgentInteractiveAdapter adapter)
+            return null;
         var environment = TrackerEnvironment();
         environment["WRIGHTY_CLAIMANT_ID"] = handle.ClaimantId;
         environment["WRIGHTY_CLAIM_TOKEN"] = handle.ClaimToken;
@@ -3789,12 +3800,14 @@ public sealed class IndexModel(
     private string? BuildResumePrompt(WorkItemId id, WorkItemClaimSummary claim) =>
         HasResumeAddress(claim) &&
         ClaimantKinds.FromStorageValue(claim.ClaimantKind) == ClaimantKind.Agent &&
-        claim.Agent is not null
-            ? adaptersByName[claim.Agent].DecorateResumePrompt(WorkerPrompt.ForResume(id))
+        claim.Agent is not null &&
+        adaptersByName[claim.Agent] is IAgentResumeAdapter resume
+            ? resume.DecorateResumePrompt(WorkerPrompt.ForResume(id))
             : null;
 
     private bool HasResumeAddress(WorkItemClaimSummary claim) =>
-        claim.Agent is not null && adaptersByName.ContainsKey(claim.Agent) &&
+        claim.Agent is not null &&
+        adaptersByName.GetValueOrDefault(claim.Agent) is IAgentResumeAdapter &&
         !string.IsNullOrWhiteSpace(claim.SessionId) &&
         !string.IsNullOrWhiteSpace(claim.WorkspacePath);
 
@@ -3818,7 +3831,7 @@ public sealed class IndexModel(
         var ownsAgent = OwnsCurrentAgentClaim(item.Id, claim);
         var ownsHuman = OwnsCurrentHumanClaim(item.Id, claim);
         var unmanagedTerminal = IsUnmanagedTerminal(item, claim);
-        var desktop = adapter.BuildDesktopLaunch(new SessionHandle(sessionId))
+        var desktop = DesktopAddress(adapter, sessionId)
             .EnableExperimental(
                 state.Config.EffectiveWorker.AllowsExperimentalDesktopSession(agent));
         var runtimeInstalled = runtime is { Installed: true };
@@ -3889,6 +3902,17 @@ public sealed class IndexModel(
         adapter = recordedAdapter;
         return true;
     }
+
+    private DesktopLaunchAddress DesktopAddress(IAgentAdapter adapter, string sessionId) =>
+        adapter is IAgentDesktopAdapter desktop
+            ? desktop.BuildDesktopLaunch(new SessionHandle(sessionId))
+            : new DesktopLaunchAddress(
+                adapter.Agent,
+                null,
+                DesktopSessionSupport.Unavailable,
+                "Desktop session launch is not supported for this agent.",
+                descriptorsByName.GetValueOrDefault(adapter.Agent)?.LocalLaunch?.DesktopApplication ??
+                    AgentDisplayName(adapter.Agent));
 
     private string? CliUnavailableReason(
         string agent,

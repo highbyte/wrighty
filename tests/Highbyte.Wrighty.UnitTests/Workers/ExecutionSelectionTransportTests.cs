@@ -46,10 +46,11 @@ public sealed class ExecutionSelectionTransportTests
         // There is no overload that could: the parameter exists only on the fresh-start methods.
         // This asserts the resulting arguments too, so the guarantee survives a future signature
         // change that adds one.
+        var resume = Assert.IsAssignableFrom<IAgentResumeAdapter>(adapter);
         var invocations = new[]
         {
-            adapter.BuildResume(Handle, Space, "prompt", AgentPermissionProfile.Workspace),
-            adapter.BuildResumeWithPrompt(Handle, Space, AgentPermissionProfile.Workspace, "prompt"),
+            resume.BuildResume(Handle, Space, "prompt", AgentPermissionProfile.Workspace),
+            resume.BuildResumeWithPrompt(Handle, Space, AgentPermissionProfile.Workspace, "prompt"),
             adapter.BuildCheck(Handle, Space)
         };
 

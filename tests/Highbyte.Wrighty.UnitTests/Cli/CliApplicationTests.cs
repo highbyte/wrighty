@@ -46,7 +46,7 @@ public sealed class CliApplicationTests : IDisposable
         var registry = new AgentRegistry(
         [
             .. builtIns.Integrations,
-            new AgentIntegration(future, new FutureAgentAdapter())
+            new AgentIntegration(future, new FreshOnlyAgentAdapter(future.Id))
         ]);
         var output = new StringWriter();
         var settings = TempSettingsStore();

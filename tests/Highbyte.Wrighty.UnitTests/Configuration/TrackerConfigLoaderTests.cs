@@ -26,7 +26,7 @@ public sealed class TrackerConfigLoaderTests : IDisposable
         var registry = new AgentRegistry(
         [
             .. builtIns.Integrations,
-            new AgentIntegration(future, new FutureAgentAdapter())
+            new AgentIntegration(future, new FreshOnlyAgentAdapter(future.Id))
         ]);
         Directory.CreateDirectory(directory);
         await File.WriteAllTextAsync(

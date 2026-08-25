@@ -4,7 +4,11 @@ using static Highbyte.Wrighty.Workers.AgentFlags;
 
 namespace Highbyte.Wrighty.Workers;
 
-public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAgentAdapter
+public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) :
+    IAgentAdapter,
+    IAgentResumeAdapter,
+    IAgentInteractiveAdapter,
+    IAgentDesktopAdapter
 {
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
@@ -191,4 +195,3 @@ public sealed class ClaudeAgentAdapter(Func<DateTimeOffset>? clock = null) : IAg
     private static AgentInvocation Invocation(Workspace workspace, IReadOnlyList<string> arguments) =>
         new("claude", arguments, workspace.Path, new Dictionary<string, string>());
 }
-

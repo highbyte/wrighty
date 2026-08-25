@@ -55,7 +55,7 @@ public class PromptTransportTests
     {
         // A resume delta is approved entry text like any other, so it must not reach the command
         // line either — and it re-enters an existing session, so the session flag must survive.
-        var invocation = adapter.BuildResumeWithPrompt(
+        var invocation = Assert.IsAssignableFrom<IAgentResumeAdapter>(adapter).BuildResumeWithPrompt(
             Handle, Workspace, AgentPermissionProfile.Workspace, Prompt);
 
         Assert.Equal(Prompt, invocation.StandardInput);

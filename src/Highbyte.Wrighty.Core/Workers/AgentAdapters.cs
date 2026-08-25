@@ -133,13 +133,6 @@ public interface IAgentAdapter
     bool MatchesEmittedSessionId(SessionHandle handle, string sessionId) => true;
 
     /// <summary>
-    /// Applies the vendor's explicit Agent Skill invocation syntax to a continuation prompt.
-    /// Implementations should be idempotent because prompts may pass through more than one
-    /// presentation and execution surface.
-    /// </summary>
-    string DecorateResumePrompt(string prompt) => prompt;
-
-    /// <summary>
     /// The effective posture this adapter produces for a requested profile, including what the
     /// vendor cannot enforce. Callers report this rather than assuming the request was honored.
     /// </summary>
@@ -178,32 +171,55 @@ public interface IAgentAdapter
         AgentPermissionProfile permissions, string prompt, ExecutionSelection? selection = null);
 
     /// <summary>
+    /// The read-only liveness probe. It issues no <c>wrighty</c> command and needs no workspace
+    /// write or network access, so it always runs at the narrowest posture the vendor offers,
+    /// independently of the configured profile.
+    /// </summary>
+    AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace);
+    string? TryExtractSessionId(string outputLine) => null;
+    Task<AgentRunResult> InterpretAsync(Stream stdout, int exitCode, CancellationToken cancellationToken);
+}
+
+/// <summary>Vendor protocol for re-entering a previously recorded session.</summary>
+public interface IAgentResumeAdapter : IAgentAdapter
+{
+    /// <summary>
+    /// Applies the vendor's explicit Agent Skill invocation syntax to a continuation prompt.
+    /// Implementations should be idempotent because prompts may pass through more than one
+    /// presentation and execution surface.
+    /// </summary>
+    string DecorateResumePrompt(string prompt) => prompt;
+
+    /// <summary>
     /// Re-entering a recorded session with a prompt Wrighty supplies, delivered on standard input
     /// for the same reason as a fresh launch: an approved entry's text must not reach the process
     /// table or the argument list worker events print.
     /// </summary>
     AgentInvocation BuildResumeWithPrompt(SessionHandle handle, Workspace workspace,
         AgentPermissionProfile permissions, string prompt);
+
     AgentInvocation BuildResume(SessionHandle handle, Workspace workspace, string prompt,
         AgentPermissionProfile permissions);
+}
 
-    /// <summary>
-    /// The read-only liveness probe. It issues no <c>wrighty</c> command and needs no workspace
-    /// write or network access, so it always runs at the narrowest posture the vendor offers,
-    /// independently of the configured profile.
-    /// </summary>
-    AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace);
+/// <summary>Vendor protocol for opening a recorded session in an interactive CLI.</summary>
+public interface IAgentInteractiveAdapter : IAgentAdapter
+{
     LocalAgentInvocation BuildInteractiveInvocation(
         SessionHandle handle,
         Workspace workspace,
         IReadOnlyDictionary<string, string>? environment = null);
-    DesktopLaunchAddress BuildDesktopLaunch(SessionHandle handle);
+
     string BuildInteractiveCommand(
         SessionHandle handle,
         Workspace workspace,
         IReadOnlyDictionary<string, string>? environment = null);
-    string? TryExtractSessionId(string outputLine) => null;
-    Task<AgentRunResult> InterpretAsync(Stream stdout, int exitCode, CancellationToken cancellationToken);
+}
+
+/// <summary>Vendor protocol for addressing a recorded session in a Desktop application.</summary>
+public interface IAgentDesktopAdapter : IAgentAdapter
+{
+    DesktopLaunchAddress BuildDesktopLaunch(SessionHandle handle);
 }
 
 internal static class InteractiveAgentCommand
