@@ -1,5 +1,6 @@
 using Highbyte.Wrighty.Processes;
 using Highbyte.Wrighty.Models;
+using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.Workers;
@@ -20,12 +21,27 @@ public sealed class AgentRegistryTests
             Assert.NotNull(integration.ExecutionAdapter);
             Assert.NotNull(integration.ModelDiscovery);
             Assert.NotNull(integration.SessionExporter);
+            Assert.NotNull(integration.ContextDetector);
             Assert.NotNull(integration.Descriptor.SkillTarget);
             Assert.NotNull(integration.Descriptor.Projection);
             Assert.Equal(
                 integration.Descriptor.Id,
                 integration.ExecutionAdapter!.Agent,
                 ignoreCase: true);
+            var handle = integration.ExecutionAdapter.CreateSessionHandle(
+                new WorkItemId("local:registry"),
+                "claim-generation");
+            var interactive = integration.ExecutionAdapter.BuildInteractiveInvocation(
+                handle,
+                new Workspace(Path.GetTempPath()));
+            Assert.Equal(integration.Descriptor.ExecutableName, interactive.Executable);
+            var desktop = integration.ExecutionAdapter.BuildDesktopLaunch(handle);
+            Assert.Equal(
+                integration.Descriptor.LocalLaunch!.DesktopScheme,
+                desktop.Uri!.Scheme);
+            Assert.Equal(
+                integration.Descriptor.LocalLaunch.DesktopApplication,
+                desktop.RequiredApplication);
         });
     }
 
@@ -73,6 +89,40 @@ public sealed class AgentRegistryTests
                 new ClaudeModelDiscovery(new MissingExecutables()),
                 new ClaudeSessionExporter())
         ]));
+
+        Assert.Throws<ArgumentException>(() => new AgentRegistry(
+        [
+            new AgentIntegration(
+                BuiltInAgentRegistry.Claude,
+                new ClaudeAgentAdapter(),
+                new ClaudeModelDiscovery(new MissingExecutables()),
+                new ClaudeSessionExporter(),
+                new EnvironmentAgentContextDetector("codex", ["CODEX_THREAD_ID"]))
+        ]));
+    }
+
+    [Fact]
+    public void Shared_skill_targets_must_have_identical_destination_metadata()
+    {
+        var first = BuiltInAgentRegistry.Codex with
+        {
+            Capabilities = AgentCapabilities.SkillInstallation,
+            Projection = null,
+            LocalLaunch = null
+        };
+        var second = BuiltInAgentRegistry.Copilot with
+        {
+            Capabilities = AgentCapabilities.SkillInstallation,
+            SkillTarget = first.SkillTarget! with { RelativeDirectory = ".other/skills/wrighty" },
+            Projection = null,
+            LocalLaunch = null
+        };
+
+        Assert.Throws<ArgumentException>(() => new AgentRegistry(
+        [
+            new AgentIntegration(first),
+            new AgentIntegration(second)
+        ]));
     }
 
     [Fact]
@@ -85,7 +135,12 @@ public sealed class AgentRegistryTests
             "future-agent",
             AgentCapabilities.WorkerExecution |
             AgentCapabilities.Resume |
-            AgentCapabilities.InteractiveCli);
+            AgentCapabilities.InteractiveCli |
+            AgentCapabilities.DesktopLaunch,
+            LocalLaunch: new AgentLocalLaunch(
+                "Future Desktop",
+                "future",
+                AgentDesktopOperatingSystems.MacOS));
         var registry = new AgentRegistry(
             [new AgentIntegration(descriptor, new FutureAgentAdapter())]);
         var runtimes = new AgentRuntimeCatalog(
@@ -98,6 +153,89 @@ public sealed class AgentRegistryTests
         Assert.Equal(
             "future-agent",
             AgentExecutionCapabilities.ForAgent("future-agent", registry)!.Agent);
+        var adapter = registry.GetRequired("future-agent").ExecutionAdapter!;
+        var handle = adapter.CreateSessionHandle(
+            new WorkItemId("local:future"),
+            "claim-generation");
+        var workspace = new Workspace(Path.GetTempPath());
+        var item = new WorkItemDetail(
+            new WorkItemId("local:future"),
+            "Future item",
+            "Future body",
+            null,
+            "Todo",
+            null,
+            false);
+        Assert.Equal(
+            "future-agent",
+            adapter.BuildStart(
+                item,
+                handle,
+                workspace,
+                AgentPermissionProfile.Workspace).Executable);
+        Assert.Equal("future-agent", adapter.BuildCheck(handle, workspace).Executable);
+        Assert.Equal(
+            "future-agent",
+            adapter.BuildResume(
+                handle,
+                workspace,
+                WorkerPrompt.ForResume(item.Id),
+                AgentPermissionProfile.Workspace).Executable);
+        Assert.Null(registry.GetRequired("future-agent").ModelDiscovery);
+        Assert.Null(registry.GetRequired("future-agent").SessionExporter);
+        Assert.Null(registry.GetRequired("future-agent").ContextDetector);
+
+        string? application = null;
+        string? scheme = null;
+        var launcher = new LocalAgentSessionLauncher(
+            new InstalledExecutable("future-agent"),
+            new LocalAgentLaunchPlatform(
+                LocalAgentOperatingSystem.MacOS,
+                (candidateApplication, candidateScheme) =>
+                {
+                    application = candidateApplication;
+                    scheme = candidateScheme;
+                    return true;
+                },
+                (_, _, _, _, _, _) => Task.FromResult(
+                    new SessionLaunchResult(SessionLaunchStatus.Launched)),
+                (_, _) => Task.FromResult(
+                    new SessionLaunchResult(SessionLaunchStatus.Launched))),
+            registry);
+
+        var localCapabilities = launcher.GetCapabilities("future-agent");
+
+        Assert.True(localCapabilities.CanLaunchCli);
+        Assert.True(localCapabilities.CanLaunchDesktop);
+        Assert.Equal("Future Desktop", application);
+        Assert.Equal("future", scheme);
+    }
+
+    [Fact]
+    public void A_fourth_agent_flows_through_host_drain_and_interruption_projection()
+    {
+        using var draining = new WorkerRunControl();
+        draining.RequestDrain();
+
+        var active = WorkerInstanceEventProjection.Project(
+            new WorkerEvent("started", "local:future", "future-agent"),
+            draining);
+
+        Assert.NotNull(active);
+        Assert.Equal("local:future", active.ItemId);
+        Assert.Equal("future-agent", active.Agent);
+        Assert.Equal(WorkerInstanceState.Draining, active.State);
+
+        using var interrupted = new WorkerRunControl();
+        interrupted.RequestInterrupt(WorkerInterruptionReason.OperatorStopNow);
+        var terminal = WorkerInstanceEventProjection.Project(
+            new WorkerEvent("interrupted", "local:future", "future-agent"),
+            interrupted);
+
+        Assert.NotNull(terminal);
+        Assert.Null(terminal.ItemId);
+        Assert.Null(terminal.Agent);
+        Assert.Equal(WorkerInstanceState.Finalizing, terminal.State);
     }
 
     [Fact]
@@ -119,6 +257,28 @@ public sealed class AgentRegistryTests
         var offenders = Directory.EnumerateFiles(sourceRoot, "*.cs", SearchOption.AllDirectories)
             .Where(path => !string.Equals(
                 Path.GetFullPath(path), registryPath, StringComparison.OrdinalIgnoreCase))
+            .SelectMany(path => File.ReadLines(path)
+                .Select((line, index) => (Path: path, Line: index + 1, Text: line))
+                .Where(value => forbidden.Any(value.Text.Contains)))
+            .Select(value => $"{Path.GetRelativePath(RepositoryRoot(), value.Path)}:{value.Line}")
+            .ToArray();
+
+        Assert.Empty(offenders);
+    }
+
+    [Fact]
+    public void Production_does_not_reintroduce_a_fixed_three_agent_collection()
+    {
+        var sourceRoot = Path.Combine(RepositoryRoot(), "src");
+        var forbidden = new[]
+        {
+            "new[] { \"claude\", \"codex\", \"copilot\" }",
+            "[\"claude\", \"codex\", \"copilot\"]"
+        };
+
+        var offenders = Directory.EnumerateFiles(sourceRoot, "*.*", SearchOption.AllDirectories)
+            .Where(path => path.EndsWith(".cs", StringComparison.OrdinalIgnoreCase) ||
+                path.EndsWith(".cshtml", StringComparison.OrdinalIgnoreCase))
             .SelectMany(path => File.ReadLines(path)
                 .Select((line, index) => (Path: path, Line: index + 1, Text: line))
                 .Where(value => forbidden.Any(value.Text.Contains)))
@@ -177,101 +337,4 @@ public sealed class AgentRegistryTests
         }
     }
 
-    private sealed class FutureAgentAdapter : IAgentAdapter
-    {
-        private readonly CodexAgentAdapter inner = new();
-
-        public string Agent => "future-agent";
-
-        public string ExecutableName => "future-agent";
-
-        public bool SupportsPreassignedHandle => inner.SupportsPreassignedHandle;
-
-        public AgentPermissions DescribePermissions(AgentPermissionProfile profile) =>
-            inner.DescribePermissions(profile) with { Agent = Agent };
-
-        public AgentExecutionCapability DescribeExecutionCapability() =>
-            inner.DescribeExecutionCapability() with { Agent = Agent };
-
-        public AgentInvocation BuildStart(
-            WorkItemDetail item,
-            SessionHandle handle,
-            Workspace workspace,
-            AgentPermissionProfile permissions,
-            string? promptAddendum = null,
-            bool requiresUserConfirmation = false,
-            ExecutionSelection? selection = null) =>
-            inner.BuildStart(
-                item,
-                handle,
-                workspace,
-                permissions,
-                promptAddendum,
-                requiresUserConfirmation,
-                selection) with
-            {
-                Executable = ExecutableName
-            };
-
-        public AgentInvocation BuildStartWithPrompt(
-            SessionHandle handle,
-            Workspace workspace,
-            AgentPermissionProfile permissions,
-            string prompt,
-            ExecutionSelection? selection = null) =>
-            inner.BuildStartWithPrompt(handle, workspace, permissions, prompt, selection) with
-            {
-                Executable = ExecutableName
-            };
-
-        public AgentInvocation BuildResumeWithPrompt(
-            SessionHandle handle,
-            Workspace workspace,
-            AgentPermissionProfile permissions,
-            string prompt) =>
-            inner.BuildResumeWithPrompt(handle, workspace, permissions, prompt) with
-            {
-                Executable = ExecutableName
-            };
-
-        public AgentInvocation BuildResume(
-            SessionHandle handle,
-            Workspace workspace,
-            string prompt,
-            AgentPermissionProfile permissions) =>
-            inner.BuildResume(handle, workspace, prompt, permissions) with
-            {
-                Executable = ExecutableName
-            };
-
-        public AgentInvocation BuildCheck(SessionHandle handle, Workspace workspace) =>
-            inner.BuildCheck(handle, workspace) with { Executable = ExecutableName };
-
-        public LocalAgentInvocation BuildInteractiveInvocation(
-            SessionHandle handle,
-            Workspace workspace,
-            IReadOnlyDictionary<string, string>? environment = null) =>
-            inner.BuildInteractiveInvocation(handle, workspace, environment) with
-            {
-                Executable = ExecutableName
-            };
-
-        public DesktopLaunchAddress BuildDesktopLaunch(SessionHandle handle) =>
-            inner.BuildDesktopLaunch(handle) with { Vendor = Agent };
-
-        public string BuildInteractiveCommand(
-            SessionHandle handle,
-            Workspace workspace,
-            IReadOnlyDictionary<string, string>? environment = null) =>
-            inner.BuildInteractiveCommand(handle, workspace, environment);
-
-        public string? TryExtractSessionId(string outputLine) =>
-            inner.TryExtractSessionId(outputLine);
-
-        public Task<AgentRunResult> InterpretAsync(
-            Stream stdout,
-            int exitCode,
-            CancellationToken cancellationToken) =>
-            inner.InterpretAsync(stdout, exitCode, cancellationToken);
-    }
 }

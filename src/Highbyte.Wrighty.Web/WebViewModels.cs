@@ -208,12 +208,15 @@ public sealed record ItemPageModel(
     DateTimeOffset? CreatedAt = null,
     DateTimeOffset? UpdatedAt = null,
     bool QueueAuthorizesExecution = false,
-    string WorkerQueueStatus = "Worker queue")
+    string WorkerQueueStatus = "Worker queue",
+    IReadOnlyList<AgentOptionView>? AvailableAgents = null)
 {
     public IReadOnlyList<string> EffectiveExecutionProfiles => ExecutionProfiles ?? [];
 
     public IReadOnlyDictionary<string, string> EffectiveFields =>
         Fields ?? EmptyFields;
+
+    public IReadOnlyList<AgentOptionView> AgentOptions => AvailableAgents ?? [];
 
     private static readonly IReadOnlyDictionary<string, string> EmptyFields =
         new Dictionary<string, string>();
@@ -378,7 +381,13 @@ public sealed record CreateItemPageModel(
     bool QueueAuthorizesExecution,
     string WorkerQueueStatus,
     string? ErrorCode = null,
-    string? ErrorMessage = null);
+    string? ErrorMessage = null,
+    IReadOnlyList<AgentOptionView>? AvailableAgents = null)
+{
+    public IReadOnlyList<AgentOptionView> AgentOptions => AvailableAgents ?? [];
+}
+
+public sealed record AgentOptionView(string Id, string DisplayName);
 
 public sealed record GitHubTargetView(
     string Host,
@@ -449,6 +458,9 @@ public sealed record SettingsPageModel(
     // Registered adapters with this host's effective installation state. Testing overrides may
     // deliberately turn an installed runtime into a simulated missing one.
     IReadOnlyList<Highbyte.Wrighty.Workers.AgentRuntime> AgentRuntimes,
+    // Immutable built-in identity and display metadata; unlike runtimes this is not affected by
+    // installation or testing overlays.
+    IReadOnlyList<Highbyte.Wrighty.Workers.AgentDescriptor> AgentDescriptors,
     // What each installed agent reports it can run. Empty when discovery is unavailable, which the
     // form renders as a free-text field rather than an empty picker.
     IReadOnlyList<Highbyte.Wrighty.Workers.AgentModelCatalog> AgentModels,
@@ -487,16 +499,12 @@ public sealed record ConfigurationFormDraft(
     string? UsageFailureMaxAttempts = null,
     string? UsageFailureResetGraceMinutes = null,
     bool UsageFailureAllowCrossAgentHandoff = false,
-    string? UsageFailureClaudeFallbacks = null,
-    string? UsageFailureCodexFallbacks = null,
-    string? UsageFailureCopilotFallbacks = null,
+    IReadOnlyDictionary<string, string?>? UsageFailureFallbacks = null,
     string? LeaseMinutes = null,
     bool UseWorkerQueue = true,
     string? RequirementsAssessmentMode = null,
     string? AgentPermissions = null,
-    string? ClaudePermissions = null,
-    string? CodexPermissions = null,
-    string? CopilotPermissions = null,
+    IReadOnlyDictionary<string, string?>? AgentPermissionOverrides = null,
     string? WorktreeRoot = null,
     string? BranchFormat = null,
     string? WorktreeNameFormat = null,

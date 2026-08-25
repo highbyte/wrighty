@@ -3,9 +3,7 @@ using Highbyte.Wrighty.Processes;
 namespace Highbyte.Wrighty.Workers;
 
 /// <summary>
-/// Resolves an agent name to its discovery adapter, mirroring
-/// <see cref="AgentExecutionCapabilities.ForAgent"/> so a caller with a name and no adapter in hand
-/// can still ask.
+/// Resolves an agent name to its registered discovery adapter.
 ///
 /// Results are cached for the life of the process. A probe spawns a vendor CLI and waits for it, so
 /// re-asking once per command would make an interactive config session noticeably slower for an
@@ -21,7 +19,7 @@ public sealed class AgentModelDiscoveries(
     public AgentModelDiscoveries(
         IExecutableResolver executables,
         IAgentRuntimeCatalog? runtimes = null)
-        : this(agent => ForAgent(agent, executables), runtimes)
+        : this(BuiltInAgentRegistry.Create(executables), runtimes)
     {
     }
 
@@ -49,15 +47,6 @@ public sealed class AgentModelDiscoveries(
     private readonly Dictionary<string, Task<AgentModelCatalog>> cached =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim gate = new(1, 1);
-
-    public static IAgentModelDiscovery? ForAgent(string? agent, IExecutableResolver executables) =>
-        agent?.Trim().ToLowerInvariant() switch
-        {
-            "claude" => new ClaudeModelDiscovery(executables),
-            "codex" => new CodexModelDiscovery(executables),
-            "copilot" => new CopilotModelDiscovery(executables),
-            _ => null
-        };
 
     /// <summary>
     /// Never returns null: an agent Wrighty does not support yields an unavailable catalog, like

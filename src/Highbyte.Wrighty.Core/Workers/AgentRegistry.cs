@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.Processes;
+using Highbyte.Wrighty.AgentContext;
 
 namespace Highbyte.Wrighty.Workers;
 
@@ -35,6 +36,21 @@ public sealed record AgentProjection(
     int ProjectionOrder,
     int PolicyOrder);
 
+[Flags]
+public enum AgentDesktopOperatingSystems
+{
+    None = 0,
+    MacOS = 1 << 0,
+    Windows = 1 << 1,
+    Linux = 1 << 2
+}
+
+/// <summary>The allowlisted Desktop application and URI scheme for one agent.</summary>
+public sealed record AgentLocalLaunch(
+    string DesktopApplication,
+    string DesktopScheme,
+    AgentDesktopOperatingSystems DesktopOperatingSystems);
+
 /// <summary>
 /// Dependency-free identity and presentation metadata for a built-in agent. Runtime installation
 /// and readiness deliberately do not live here: they are host facts supplied by
@@ -47,7 +63,8 @@ public sealed record AgentDescriptor(
     string ExecutableName,
     AgentCapabilities Capabilities,
     AgentSkillTarget? SkillTarget = null,
-    AgentProjection? Projection = null);
+    AgentProjection? Projection = null,
+    AgentLocalLaunch? LocalLaunch = null);
 
 /// <summary>
 /// Binds stable identity to the process-scoped services Wrighty can use for that agent.
@@ -57,7 +74,8 @@ public sealed record AgentIntegration(
     AgentDescriptor Descriptor,
     IAgentAdapter? ExecutionAdapter = null,
     IAgentModelDiscovery? ModelDiscovery = null,
-    IAgentSessionExporter? SessionExporter = null);
+    IAgentSessionExporter? SessionExporter = null,
+    IAgentContextDetector? ContextDetector = null);
 
 /// <summary>The authoritative catalogue of built-in agent integrations for one process.</summary>
 public sealed class AgentRegistry
@@ -99,6 +117,7 @@ public sealed class AgentRegistry
             values,
             projection => projection.PolicyOrder,
             "policy");
+        RequireConsistentSkillTargets(values);
 
         Integrations = Array.AsReadOnly(values
             .OrderBy(value => value.Descriptor.Id, StringComparer.Ordinal)
@@ -172,6 +191,11 @@ public sealed class AgentRegistry
             AgentCapabilities.SessionExport,
             integration.SessionExporter,
             "session exporter");
+        ValidateService(
+            descriptor,
+            AgentCapabilities.ContextDetection,
+            integration.ContextDetector,
+            "context detector");
         ValidateMetadata(
             descriptor,
             AgentCapabilities.SkillInstallation,
@@ -182,6 +206,11 @@ public sealed class AgentRegistry
             AgentCapabilities.GitHubProjection,
             descriptor.Projection,
             "GitHub projection");
+        ValidateMetadata(
+            descriptor,
+            AgentCapabilities.DesktopLaunch,
+            descriptor.LocalLaunch,
+            "local launch metadata");
 
         if ((descriptor.Capabilities & (
                 AgentCapabilities.Resume |
@@ -216,6 +245,29 @@ public sealed class AgentRegistry
                     $"Agent '{descriptor.Id}' projection order cannot be negative.",
                     nameof(integration));
         }
+        if (descriptor.LocalLaunch is { } localLaunch)
+        {
+            RequireText(localLaunch.DesktopApplication, nameof(localLaunch.DesktopApplication));
+            RequireText(localLaunch.DesktopScheme, nameof(localLaunch.DesktopScheme));
+            if (!Uri.CheckSchemeName(localLaunch.DesktopScheme) ||
+                localLaunch.DesktopScheme != localLaunch.DesktopScheme.ToLowerInvariant())
+            {
+                throw new ArgumentException(
+                    $"Agent '{descriptor.Id}' must declare a lowercase URI scheme.",
+                    nameof(integration));
+            }
+            const AgentDesktopOperatingSystems allPlatforms =
+                AgentDesktopOperatingSystems.MacOS |
+                AgentDesktopOperatingSystems.Windows |
+                AgentDesktopOperatingSystems.Linux;
+            if (localLaunch.DesktopOperatingSystems == AgentDesktopOperatingSystems.None ||
+                (localLaunch.DesktopOperatingSystems & ~allPlatforms) != 0)
+            {
+                throw new ArgumentException(
+                    $"Agent '{descriptor.Id}' must declare at least one supported Desktop platform.",
+                    nameof(integration));
+            }
+        }
 
         if (integration.ExecutionAdapter is { } adapter)
         {
@@ -235,6 +287,8 @@ public sealed class AgentRegistry
             RequireSameId(descriptor.Id, discovery.Agent, "model discovery");
         if (integration.SessionExporter is { } exporter)
             RequireSameId(descriptor.Id, exporter.Agent, "session exporter");
+        if (integration.ContextDetector is { } detector)
+            RequireSameId(descriptor.Id, detector.Agent, "context detector");
     }
 
     private static void ValidateService<T>(
@@ -295,6 +349,41 @@ public sealed class AgentRegistry
                 $"Agent {name} order '{duplicate.Key}' is registered more than once.",
                 nameof(integrations));
     }
+
+    private static void RequireConsistentSkillTargets(
+        IReadOnlyList<AgentIntegration> integrations)
+    {
+        var conflictingId = integrations
+            .Select(integration => integration.Descriptor.SkillTarget)
+            .Where(target => target is not null)
+            .Select(target => target!)
+            .GroupBy(target => target.Id, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group
+                .Distinct()
+                .Count() > 1);
+        if (conflictingId is not null)
+        {
+            throw new ArgumentException(
+                $"Skill target '{conflictingId.Key}' has conflicting destination metadata.",
+                nameof(integrations));
+        }
+
+        var conflictingPath = integrations
+            .Select(integration => integration.Descriptor.SkillTarget)
+            .Where(target => target is not null)
+            .Select(target => target!)
+            .GroupBy(target => target.RelativeDirectory, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group
+                .Select(target => target.Id)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count() > 1);
+        if (conflictingPath is not null)
+        {
+            throw new ArgumentException(
+                $"Skill destination '{conflictingPath.Key}' is assigned to multiple target ids.",
+                nameof(integrations));
+        }
+    }
 }
 
 /// <summary>Builds Wrighty's reviewed, compile-time set of built-in integrations.</summary>
@@ -324,17 +413,30 @@ public static class BuiltInAgentRegistry
                 Claude,
                 new ClaudeAgentAdapter(),
                 new ClaudeModelDiscovery(executables),
-                new ClaudeSessionExporter(claudeTranscriptRoot)),
+                new ClaudeSessionExporter(claudeTranscriptRoot),
+                new EnvironmentAgentContextDetector(
+                    Claude.Id,
+                    ["CLAUDE_CODE_REMOTE_SESSION_ID", "CLAUDE_CODE_SESSION_ID"],
+                    [
+                        new AgentPresenceSignal("CLAUDECODE", ["1"]),
+                        new AgentPresenceSignal(
+                            "CLAUDE_CODE_REMOTE",
+                            ["1", "true", "yes", "on"])
+                    ])),
             new AgentIntegration(
                 Codex,
                 new CodexAgentAdapter(),
                 new CodexModelDiscovery(executables),
-                new CodexSessionExporter(codexSessionsRoot)),
+                new CodexSessionExporter(codexSessionsRoot),
+                new EnvironmentAgentContextDetector(Codex.Id, ["CODEX_THREAD_ID"])),
             new AgentIntegration(
                 Copilot,
                 new CopilotAgentAdapter(shareDirectory: copilotSharesRoot),
                 new CopilotModelDiscovery(executables),
-                new CopilotSessionExporter(copilotSharesRoot))
+                new CopilotSessionExporter(copilotSharesRoot),
+                new EnvironmentAgentContextDetector(
+                    Copilot.Id,
+                    ["COPILOT_AGENT_SESSION_ID"]))
         ]);
     }
 
@@ -351,7 +453,11 @@ public static class BuiltInAgentRegistry
             "Use Anthropic Claude Code",
             "ORANGE",
             ProjectionOrder: 1,
-            PolicyOrder: 0));
+            PolicyOrder: 0),
+        new AgentLocalLaunch(
+            "Claude",
+            "claude",
+            AgentDesktopOperatingSystems.MacOS | AgentDesktopOperatingSystems.Windows));
 
     public static AgentDescriptor Codex { get; } = new(
         "codex",
@@ -366,7 +472,11 @@ public static class BuiltInAgentRegistry
             "Use OpenAI Codex",
             "GREEN",
             ProjectionOrder: 0,
-            PolicyOrder: 1));
+            PolicyOrder: 1),
+        new AgentLocalLaunch(
+            "ChatGPT",
+            "codex",
+            AgentDesktopOperatingSystems.MacOS | AgentDesktopOperatingSystems.Windows));
 
     public static AgentDescriptor Copilot { get; } = new(
         "copilot",
@@ -381,7 +491,13 @@ public static class BuiltInAgentRegistry
             "Use GitHub Copilot",
             "BLUE",
             ProjectionOrder: 2,
-            PolicyOrder: 2));
+            PolicyOrder: 2),
+        new AgentLocalLaunch(
+            "GitHub Copilot",
+            "ghapp",
+            AgentDesktopOperatingSystems.MacOS |
+            AgentDesktopOperatingSystems.Windows |
+            AgentDesktopOperatingSystems.Linux));
 
     public static IReadOnlyList<AgentDescriptor> Descriptors { get; } =
         Array.AsReadOnly<AgentDescriptor>([Claude, Codex, Copilot]);

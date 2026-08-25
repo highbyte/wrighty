@@ -14,10 +14,13 @@ public interface IWorkerSkillAvailability
 
 public sealed class FileWorkerSkillAvailability(
     IExecutableResolver executables,
-    string? userHome = null) : IWorkerSkillAvailability
+    string? userHome = null,
+    AgentRegistry? registry = null) : IWorkerSkillAvailability
 {
     private readonly string home = userHome ??
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+    private readonly IReadOnlyList<AgentDescriptor> agents =
+        registry?.Descriptors ?? BuiltInAgentRegistry.Descriptors;
 
     public void EnsureWorktreeReady(
         string agentType,
@@ -87,9 +90,9 @@ public sealed class FileWorkerSkillAvailability(
         }
     }
 
-    private static string RelativeSkillPath(string agentType)
+    private string RelativeSkillPath(string agentType)
     {
-        var target = BuiltInAgentRegistry.Descriptors.FirstOrDefault(descriptor =>
+        var target = agents.FirstOrDefault(descriptor =>
                 string.Equals(descriptor.Id, agentType, StringComparison.OrdinalIgnoreCase))
             ?.SkillTarget ?? throw new TrackerException(
                 "AGENT_UNSUPPORTED",

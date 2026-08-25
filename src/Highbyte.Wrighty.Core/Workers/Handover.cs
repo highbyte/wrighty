@@ -453,13 +453,9 @@ public static class HandoverRenderer
         if (string.IsNullOrWhiteSpace(agent))
             return "Agent";
         var normalized = agent.Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            "claude" => "Claude",
-            "codex" => "Codex",
-            "copilot" => "Copilot",
-            _ => "Other"
-        };
+        return BuiltInAgentRegistry.Descriptors.FirstOrDefault(descriptor =>
+                string.Equals(descriptor.Id, normalized, StringComparison.OrdinalIgnoreCase))
+            ?.DisplayName ?? "Other";
     }
 
     private static string InlineExcerpt(string value)

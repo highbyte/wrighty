@@ -4,11 +4,11 @@ Wrighty supports Claude Code, Codex, and GitHub Copilot. Support is specific to 
 surface: an agent may be available to the headless worker, through the Wrighty skill, through its
 interactive CLI, or through a Desktop application.
 
-| Agent family | Wrighty skill | Headless worker | Resume or review a recorded session |
-| --- | --- | --- | --- |
-| **Claude** | Claude Code CLI and the Claude Code surface in Desktop | Start and resume through the Claude Code CLI | Claude Code CLI; Wrighty can open Claude Desktop on macOS and Windows, and that integration is experimental |
-| **Codex** | Codex CLI, IDE extension, and Desktop | Start and resume through the Codex CLI | Codex CLI; Wrighty can open Codex in ChatGPT Desktop on macOS and Windows |
-| **GitHub Copilot** | Copilot CLI and surfaces that support skills or can be prompted to use one | Start and resume through the Copilot CLI | Copilot CLI; Wrighty can open GitHub Copilot Desktop on macOS, Windows, and Linux; see the limitations below |
+| Agent family | Headless start/resume | Model discovery | Session export for handoff | Context detection | Interactive surfaces |
+| --- | --- | --- | --- | --- | --- |
+| **Claude** | Yes, through Claude Code CLI | Yes | Yes, from the local Claude Code transcript store | Session and presence signals from Claude Code | Wrighty skill and CLI; Claude Desktop on macOS and Windows is experimental |
+| **Codex** | Yes, through Codex CLI | Yes | Yes, from the local Codex rollout store | Thread signal from Codex | Wrighty skill and CLI; ChatGPT Desktop on macOS and Windows |
+| **GitHub Copilot** | Yes, through Copilot CLI | Yes | Yes for worker-owned sessions when Wrighty's requested share export completes | Session signal from Copilot CLI | Wrighty skill and CLI; GitHub Copilot Desktop on macOS, Windows, and Linux |
 
 The worker always uses a locally installed agent CLI. Skill support describes where the bundled
 Wrighty instructions can be used interactively; it does not mean every listed surface can run a

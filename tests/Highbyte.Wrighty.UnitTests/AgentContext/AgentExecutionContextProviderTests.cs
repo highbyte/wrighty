@@ -1,5 +1,6 @@
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.Errors;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.AgentContext;
 
@@ -204,6 +205,36 @@ public sealed class AgentExecutionContextProviderTests
         Assert.Null(context.Agent);
         Assert.Null(context.SessionId);
         Assert.NotNull(context.Warning);
+    }
+
+    [Fact]
+    public void Registered_detector_adds_a_new_agent_without_provider_changes()
+    {
+        var descriptor = new AgentDescriptor(
+            "future-agent",
+            "Future Agent",
+            "Example",
+            "future-agent",
+            AgentCapabilities.ContextDetection);
+        var registry = new AgentRegistry(
+        [
+            new AgentIntegration(
+                descriptor,
+                ContextDetector: new EnvironmentAgentContextDetector(
+                    descriptor.Id,
+                    ["FUTURE_AGENT_SESSION_ID"]))
+        ]);
+        var provider = new AgentExecutionContextProvider(
+            new Dictionary<string, string?>
+            {
+                ["FUTURE_AGENT_SESSION_ID"] = "future-session"
+            },
+            registry);
+
+        var context = provider.Resolve(new AgentContextInput());
+
+        Assert.Equal("future-agent", context.Agent);
+        Assert.Equal("future-session", context.SessionId);
     }
 
     [Theory]

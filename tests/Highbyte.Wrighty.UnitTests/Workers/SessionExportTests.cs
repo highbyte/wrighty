@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.Workers;
+using Highbyte.Wrighty.Processes;
 
 namespace Highbyte.Wrighty.UnitTests.Workers;
 
@@ -108,7 +109,10 @@ public sealed class SessionExportTests : IDisposable
     [Fact]
     public async Task Vendors_without_an_integrated_surface_report_the_workspace_fallback()
     {
-        var exporter = AgentSessionExporters.ForAgent("some-future-agent");
+        var exporter = new UnsupportedSessionExporter(
+            "some-future-agent",
+            "No session export surface is registered; the handoff continues from the work item " +
+            "and workspace.");
 
         var result = await exporter.ExportAsync("session-1", CancellationToken.None);
 
@@ -298,10 +302,11 @@ public sealed class SessionExportTests : IDisposable
     [Fact]
     public void Every_agent_resolves_to_an_exporter()
     {
-        Assert.Equal("claude", AgentSessionExporters.ForAgent("claude").Agent);
-        Assert.Equal("codex", AgentSessionExporters.ForAgent("codex").Agent);
-        Assert.Equal("copilot", AgentSessionExporters.ForAgent("copilot").Agent);
-        Assert.Equal("other", AgentSessionExporters.ForAgent("other").Agent);
+        var registry = BuiltInAgentRegistry.Create(new PathExecutableResolver());
+
+        Assert.Equal("claude", registry.GetRequired("claude").SessionExporter!.Agent);
+        Assert.Equal("codex", registry.GetRequired("codex").SessionExporter!.Agent);
+        Assert.Equal("copilot", registry.GetRequired("copilot").SessionExporter!.Agent);
     }
 
     [Fact]

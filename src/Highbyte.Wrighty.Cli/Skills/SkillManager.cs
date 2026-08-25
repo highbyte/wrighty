@@ -82,9 +82,11 @@ public sealed class SkillManager(
     private readonly IReadOnlyList<AgentDescriptor> agents =
         agentDescriptors ?? BuiltInAgentRegistry.Descriptors;
 
-    public static SkillManager CreateDefault() => new(
+    public static SkillManager CreateDefault(
+        IReadOnlyList<AgentDescriptor>? agentDescriptors = null) => new(
         Path.Combine(AppContext.BaseDirectory, "skills", SkillName),
-        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        agentDescriptors);
 
     public async Task<IReadOnlyList<SkillOperationResult>> InstallAsync(
         string agent,
@@ -101,6 +103,7 @@ public sealed class SkillManager(
             var inspection = await InspectAsync(
                 destination.Path,
                 destination.Target,
+                destination.RequiresInvocationPolicy,
                 skillVersion,
                 cancellationToken);
             if (inspection.State == SkillInstallationState.Current)
@@ -154,6 +157,7 @@ public sealed class SkillManager(
             var inspection = await InspectAsync(
                 destination.Path,
                 destination.Target,
+                destination.RequiresInvocationPolicy,
                 skillVersion,
                 cancellationToken);
             results.Add(Result(
@@ -183,6 +187,7 @@ public sealed class SkillManager(
             var inspection = await InspectAsync(
                 destination.Path,
                 destination.Target,
+                destination.RequiresInvocationPolicy,
                 skillVersion,
                 cancellationToken);
             if (inspection.State == SkillInstallationState.Missing)
@@ -329,6 +334,7 @@ public sealed class SkillManager(
     private async Task<SkillInspection> InspectAsync(
         string path,
         string expectedTarget,
+        bool requiresInvocationPolicy,
         string bundledSkillVersion,
         CancellationToken cancellationToken)
     {
@@ -371,7 +377,10 @@ public sealed class SkillManager(
                 return new SkillInspection(SkillInstallationState.Modified, manifest, description);
             }
 
-            var bundledHash = await MechanicsHashAsync(assetRoot, cancellationToken, expectedTarget);
+            var bundledHash = await MechanicsHashAsync(
+                assetRoot,
+                cancellationToken,
+                requiresInvocationPolicy);
             var state = manifest.InstalledSkillVersion == installedContentVersion &&
                         installedContentVersion == bundledSkillVersion &&
                         manifest.CliVersion == ThisAssemblyVersion() &&
@@ -505,7 +514,7 @@ public sealed class SkillManager(
     private static async Task<string> MechanicsHashAsync(
         string root,
         CancellationToken cancellationToken,
-        string? target = null)
+        bool requiresInvocationPolicy = false)
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
@@ -517,7 +526,7 @@ public sealed class SkillManager(
             var content = await File.ReadAllTextAsync(file, cancellationToken);
             if (relative == "SKILL.md")
             {
-                if (target == "claude")
+                if (requiresInvocationPolicy)
                 {
                     content = AddClaudeInvocationPolicy(content);
                 }

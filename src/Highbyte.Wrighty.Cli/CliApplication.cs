@@ -4408,8 +4408,8 @@ public sealed partial class CliApplication(
         }
 
         var detected = agentContextProvider.Resolve(new AgentContextInput());
-        return detected.Warning is null && detected.Agent is "codex" or "claude" or "copilot"
-            ? detected.Agent
+        return detected.Warning is null && agents.IsSupported(detected.Agent)
+            ? detected.Agent!
             : "auto";
     }
 

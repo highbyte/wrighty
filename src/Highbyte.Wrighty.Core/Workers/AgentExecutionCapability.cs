@@ -101,8 +101,8 @@ public sealed record AgentExecutionCapability(
 
 /// <summary>
 /// Resolves an agent name to its capability without needing an adapter instance in hand, for
-/// callers such as the config commands that validate a mapping long before any launch. Mirrors
-/// <see cref="AgentSessionExporters.ForAgent"/>; the adapters remain the single source of truth.
+/// callers such as the config commands that validate a mapping long before any launch. The
+/// registry owns the adapter set; adapters remain the source of execution-specific detail.
 /// </summary>
 public static class AgentExecutionCapabilities
 {

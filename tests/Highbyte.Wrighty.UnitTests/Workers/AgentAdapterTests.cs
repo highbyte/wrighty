@@ -149,7 +149,7 @@ public sealed class AgentAdapterTests
     [Fact]
     public void Clarification_resume_reassesses_the_reported_blocker_without_repeating_the_gate()
     {
-        var prompt = WorkerPrompt.ForResume(Item.Id, "codex");
+        var prompt = WorkerPrompt.ForResume(Item.Id);
 
         Assert.Contains("reassess the previously reported blocker", prompt);
         Assert.DoesNotContain("Requirements readiness comes first", prompt);
@@ -189,7 +189,7 @@ public sealed class AgentAdapterTests
                 "/tmp/repo",
                 "resume",
                 "session-one",
-                "Continue the clarified item."
+                "$wrighty Continue the clarified item."
             ],
             invocation.Arguments);
     }
@@ -590,7 +590,14 @@ public sealed class AgentAdapterTests
         string agentType,
         string expectedStart)
     {
-        var prompt = WorkerPrompt.ForResume(Item.Id, agentType);
+        var adapter = agentType switch
+        {
+            "claude" => (IAgentAdapter)new ClaudeAgentAdapter(),
+            "codex" => new CodexAgentAdapter(),
+            "copilot" => new CopilotAgentAdapter(),
+            _ => throw new InvalidOperationException()
+        };
+        var prompt = adapter.DecorateResumePrompt(WorkerPrompt.ForResume(Item.Id));
         Assert.StartsWith(expectedStart, prompt);
         Assert.Contains("Do not suggest Wrighty claim, edit, takeover, finish, archive, or worker commands", prompt);
     }

@@ -43,6 +43,7 @@ public sealed record WrightyWebServerDependencies(
 public sealed record WebAgentSessionServices(
     IWorkspaceInventory WorkspaceInventory,
     IReadOnlyDictionary<string, IAgentAdapter> AdaptersByName,
+    IReadOnlyList<AgentDescriptor> AgentDescriptors,
     IAgentRuntimeCatalog RuntimeCatalog,
     ILocalAgentSessionLauncher Launcher);
 
@@ -192,7 +193,9 @@ public sealed class WrightyWebServer(
         }
         var localLauncher =
             dependencies.LocalAgentSessionLauncher ??
-            new LocalAgentSessionLauncher(new PathExecutableResolver());
+            (registry is null
+                ? new LocalAgentSessionLauncher(executableResolver)
+                : new LocalAgentSessionLauncher(executableResolver, registry));
         builder.Services.AddSingleton(runtimeCatalog);
         builder.Services.AddSingleton(localLauncher);
         builder.Services.AddSingleton(new WebAgentSessionServices(
@@ -200,6 +203,14 @@ public sealed class WrightyWebServer(
             registeredAdapters.ToDictionary(
                 adapter => adapter.Agent,
                 StringComparer.OrdinalIgnoreCase),
+            registry?.Descriptors ?? registeredAdapters
+                .Select(adapter => new AgentDescriptor(
+                    adapter.Agent,
+                    char.ToUpperInvariant(adapter.Agent[0]) + adapter.Agent[1..],
+                    adapter.Agent,
+                    adapter.ExecutableName,
+                    AgentCapabilities.WorkerExecution))
+                .ToArray(),
             runtimeCatalog,
             localLauncher));
         builder.Services.AddSingleton(new WebOperationsServices(

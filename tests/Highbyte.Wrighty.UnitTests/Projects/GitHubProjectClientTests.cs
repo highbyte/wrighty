@@ -4,6 +4,7 @@ using Highbyte.Wrighty.Configuration;
 using Highbyte.Wrighty.GitHub;
 using Highbyte.Wrighty.Models;
 using Highbyte.Wrighty.Projects;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.UnitTests.Projects;
 
@@ -1170,6 +1171,34 @@ public sealed class GitHubProjectClientTests
             Config, checkOnly: true, CancellationToken.None);
 
         Assert.Contains("Project schema is valid.", result.Actions);
+    }
+
+    [Fact]
+    public async Task Init_check_requires_projection_options_from_the_supplied_agent_catalogue()
+    {
+        var future = new AgentDescriptor(
+            "future-agent",
+            "Future Agent",
+            "Example",
+            "future-agent",
+            AgentCapabilities.GitHubProjection,
+            Projection: new AgentProjection(
+                "Future Agent",
+                "Example future agent",
+                "Use Future Agent",
+                "PURPLE",
+                ProjectionOrder: 3,
+                PolicyOrder: 3));
+        var client = new GitHubProjectClient(
+            new GhApi(new QueueGhProcess(InitializedDiscoveryResponse)),
+            new MemoryCache(),
+            [.. BuiltInAgentRegistry.Descriptors, future]);
+
+        var exception = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(
+            () => client.InitializeAsync(Config, checkOnly: true, CancellationToken.None));
+
+        Assert.Equal("PROJECT_SCHEMA_INVALID", exception.Code);
+        Assert.Contains("Future Agent", exception.Message);
     }
 
     [Fact]

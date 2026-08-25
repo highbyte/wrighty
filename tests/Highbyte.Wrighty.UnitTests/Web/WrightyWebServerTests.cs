@@ -20,6 +20,7 @@ using Highbyte.Wrighty.Processes;
 using Highbyte.Wrighty.Storage;
 using Highbyte.Wrighty.Web;
 using Highbyte.Wrighty.Workers;
+using Highbyte.Wrighty.UnitTests.Workers;
 using Microsoft.AspNetCore.Http;
 using System.Security.Cryptography;
 
@@ -896,7 +897,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 ["defaultAgent"] = "codex",
                 ["requirementsAssessmentMode"] = "inline",
                 ["agentPermissions"] = "workspace",
-                ["claudePermissions"] = "full"
+                ["agentPermissionOverrides[claude]"] = "full"
             });
         html = await SaveAsync(
             html,
@@ -910,9 +911,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 ["usageFailureMaxAttempts"] = "2",
                 ["usageFailureResetGraceMinutes"] = "0.5",
                 ["usageFailureAllowCrossAgentHandoff"] = "true",
-                ["usageFailureClaudeFallbacks"] = "codex, copilot",
-                ["usageFailureCodexFallbacks"] = "copilot, claude",
-                ["usageFailureCopilotFallbacks"] = "claude"
+                ["usageFailureFallbacks[claude]"] = "codex, copilot",
+                ["usageFailureFallbacks[codex]"] = "copilot, claude",
+                ["usageFailureFallbacks[copilot]"] = "claude"
             });
         html = await SaveAsync(
             html,
@@ -1511,6 +1512,42 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 Path.Combine(directory, ".wrighty", "items"),
                 "*.md").Length);
 
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Registered_fourth_agent_flows_into_create_and_settings_forms()
+    {
+        var builtIns = BuiltInAgentRegistry.Create(new PathExecutableResolver());
+        var future = new AgentDescriptor(
+            "future-agent",
+            "Future Agent",
+            "Example",
+            "future-agent",
+            AgentCapabilities.WorkerExecution);
+        var registry = new AgentRegistry(
+        [
+            .. builtIns.Integrations,
+            new AgentIntegration(future, new FutureAgentAdapter())
+        ]);
+        var host = await StartServer(agentRegistry: registry);
+        using var client = new HttpClient();
+
+        using var createRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Create");
+        using var createResponse = await client.SendAsync(createRequest);
+        var create = await createResponse.Content.ReadAsStringAsync();
+        using var settingsRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Settings");
+        using var settingsResponse = await client.SendAsync(settingsRequest);
+        var settings = await settingsResponse.Content.ReadAsStringAsync();
+
+        Assert.Contains("value=\"future-agent\"", create);
+        Assert.Contains(">Future Agent</option>", create);
+        Assert.Contains("AgentPermissionOverrides[future-agent]", settings);
+        Assert.Contains("UsageFailureFallbacks[future-agent]", settings);
         await host.Stop();
     }
 
@@ -5774,7 +5811,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
         // state a paused run leaves behind once its lease ends, and the one the board's launch
         // actions target.
         bool releaseSeededClaim = false,
-        bool hostedWorkerAvailable = false)
+        bool hostedWorkerAvailable = false,
+        AgentRegistry? agentRegistry = null)
     {
         Directory.CreateDirectory(directory);
         var config = new TrackerConfig
@@ -6062,7 +6100,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
                     new[] { new StubModelDiscovery() }),
                 StorageLocations: new StorageLocationCatalog(
                     new CachePaths(Path.Combine(directory, ".worker-cache"))),
-                WorkerService: hostedWorker));
+                WorkerService: hostedWorker,
+                AgentRegistry: agentRegistry));
         var effectiveOptions = serverOptions ?? new WebServerOptions(0, openBrowser);
         var run = server.RunAsync(
             effectiveOptions,

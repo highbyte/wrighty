@@ -1197,7 +1197,7 @@ public sealed class WorkerService(
         // preview shows the shape of the launch, not the prompt a real one would carry.
         var invocation = adapter.BuildResume(handle, workspace,
             WorkerPrompt.Append(
-                WorkerPrompt.ForResume(id, agentName),
+                WorkerPrompt.ForResume(id),
                 WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit)),
             PermissionsFor(config, agentName));
         if (options.DryRun)
@@ -1280,7 +1280,7 @@ public sealed class WorkerService(
         var handle = new SessionHandle(session.SessionId!);
         var invocation = adapter.BuildResume(
             handle, workspace, WorkerPrompt.Append(
-                WorkerPrompt.ForResume(detail.Id, agentName),
+                WorkerPrompt.ForResume(detail.Id),
                 WorkerPrompt.RunAddendum(workspace, config.Worker?.Completion?.Commit)),
             PermissionsFor(config, agentName));
         if (options.DryRun)
@@ -3562,7 +3562,7 @@ public sealed class WorkerService(
         // agent to re-read the item for itself, and it is correct precisely because there is
         // nothing approved to hand over instead.
         return adapter.BuildResume(handle, workspace,
-            WorkerPrompt.Append(WorkerPrompt.ForResume(detail.Id, agentName), resumeAddendum),
+            WorkerPrompt.Append(WorkerPrompt.ForResume(detail.Id), resumeAddendum),
             permissions);
     }
 
@@ -4917,9 +4917,10 @@ public sealed class WorkerService(
 
     private IAgentSessionExporter ResolveSessionExporter(string agent) =>
         sessionExportersByAgent.GetValueOrDefault(agent) ??
-        AgentSessionExporters.ForAgent(
+        new UnsupportedSessionExporter(
             agent,
-            copilotSharesRoot: cachePaths?.CopilotSharesRoot);
+            $"No session export surface is registered for agent '{agent}'; " +
+            "the handoff continues from the work item and workspace.");
 
     private async Task ReleaseAfterFailureAsync(
         TrackerConfig config,
@@ -5819,7 +5820,7 @@ public sealed class WorkerService(
                 new SessionHandle(queued.Session.SessionId!),
                 workspace,
                 WorkerPrompt.Append(
-                    WorkerPrompt.ForResume(queued.Detail.Id, queued.AgentName),
+                    WorkerPrompt.ForResume(queued.Detail.Id),
                     WorkerPrompt.RunAddendum(
                         workspace, config.Worker?.Completion?.Commit)),
                 PermissionsFor(config, queued.AgentName));

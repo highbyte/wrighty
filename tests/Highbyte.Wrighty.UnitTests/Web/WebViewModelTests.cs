@@ -32,16 +32,22 @@ public sealed class WebViewModelTests
             UsageFailureMaxAttempts: "4",
             UsageFailureResetGraceMinutes: "5",
             UsageFailureAllowCrossAgentHandoff: true,
-            UsageFailureClaudeFallbacks: "codex",
-            UsageFailureCodexFallbacks: "claude",
-            UsageFailureCopilotFallbacks: "codex",
+            UsageFailureFallbacks: new Dictionary<string, string?>
+            {
+                ["claude"] = "codex",
+                ["codex"] = "claude",
+                ["copilot"] = "codex"
+            },
             LeaseMinutes: "60",
             UseWorkerQueue: false,
             RequirementsAssessmentMode: "enforced",
             AgentPermissions: "workspace",
-            ClaudePermissions: "full",
-            CodexPermissions: "workspace",
-            CopilotPermissions: "read-only",
+            AgentPermissionOverrides: new Dictionary<string, string?>
+            {
+                ["claude"] = "full",
+                ["codex"] = "workspace",
+                ["copilot"] = "read-only"
+            },
             WorktreeRoot: "{repoParent}/{repo}.worktrees",
             BranchFormat: "wrighty-worker/{id}",
             WorktreeNameFormat: "{id}-{title}",
@@ -105,12 +111,12 @@ public sealed class WebViewModelTests
             },
             new string?[]
             {
-                draft.UsageFailureCopilotFallbacks,
+                draft.UsageFailureFallbacks?["copilot"],
                 draft.RequirementsAssessmentMode,
                 draft.AgentPermissions,
-                draft.ClaudePermissions,
-                draft.CodexPermissions,
-                draft.CopilotPermissions,
+                draft.AgentPermissionOverrides?["claude"],
+                draft.AgentPermissionOverrides?["codex"],
+                draft.AgentPermissionOverrides?["copilot"],
                 draft.WorktreeRoot,
                 draft.BranchFormat,
                 draft.WorktreeNameFormat,

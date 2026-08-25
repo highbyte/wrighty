@@ -51,10 +51,10 @@ internal static class Program
         IAgentRuntimeCatalog agentRuntimes = new TestingAgentRuntimeCatalog(
             physicalAgentRuntimes, configStore, Environment.CurrentDirectory);
         ILocalAgentSessionLauncher localAgentLauncher =
-            new LocalAgentSessionLauncher(executableResolver);
+            new LocalAgentSessionLauncher(executableResolver, agentRegistry);
         IGhProcess process = new GhProcess(executableResolver);
         var api = new GhApi(process);
-        IProjectClient projects = new GitHubProjectClient(api, cache);
+        IProjectClient projects = new GitHubProjectClient(api, cache, agentRegistry.Descriptors);
         var git = new GitProcess(executableResolver);
         IRepositoryDiscovery repositoryDiscovery = new GitRepositoryDiscovery(git);
         IGitHubInitializationClient githubInitialization = new GitHubInitializationClient(api);
@@ -134,7 +134,9 @@ internal static class Program
             agentAdapters,
             executables: executableResolver,
             workspaceExecutionLock: new FileWorkspaceExecutionLock(),
-            skillAvailability: new FileWorkerSkillAvailability(executableResolver),
+            skillAvailability: new FileWorkerSkillAvailability(
+                executableResolver,
+                registry: agentRegistry),
             hostLabelProvider: hostLabel,
             providerCapacityStore: providerCapacity,
             launchPreflightChecks: [contextLaunchCheck],
@@ -146,7 +148,7 @@ internal static class Program
                 controlReactionProviders: controlReactionProviders),
             cachePaths: paths,
             userSettings: userSettings,
-            agentVersions: new AgentVersionProbe(executableResolver),
+            agentVersions: new AgentVersionProbe(executableResolver, registry: agentRegistry),
             failureSimulator: new RepositoryConfigurationAgentFailureSimulator(configStore),
             agentRegistry: agentRegistry);
         IAgentExecutionContextProvider agentContext = new AgentExecutionContextProvider(
@@ -155,7 +157,8 @@ internal static class Program
                 .ToDictionary(
                     entry => (string)entry.Key,
                     entry => entry.Value?.ToString(),
-                    StringComparer.Ordinal));
+                    StringComparer.Ordinal),
+            agentRegistry);
         var modelDiscoveries = new Highbyte.Wrighty.Workers.AgentModelDiscoveries(
             agentRegistry, agentRuntimes);
         IWrightyWebServer webServer = new WrightyWebServer(
@@ -184,7 +187,7 @@ internal static class Program
             initialization,
             tracker,
             agentContext,
-            SkillManager.CreateDefault(),
+            SkillManager.CreateDefault(agentRegistry.Descriptors),
             webServer,
             Console.In,
             Console.Out,

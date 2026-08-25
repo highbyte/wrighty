@@ -34,6 +34,10 @@ public sealed class IndexModel(
     private readonly IWorkspaceInventory workspaceInventory = agentSessions.WorkspaceInventory;
     private readonly IReadOnlyDictionary<string, IAgentAdapter> adaptersByName =
         agentSessions.AdaptersByName;
+    private readonly IReadOnlyDictionary<string, AgentDescriptor> descriptorsByName =
+        agentSessions.AgentDescriptors.ToDictionary(
+            descriptor => descriptor.Id,
+            StringComparer.OrdinalIgnoreCase);
     private readonly IAgentRuntimeCatalog agentRuntimeCatalog = agentSessions.RuntimeCatalog;
     private readonly ILocalAgentSessionLauncher localAgentSessionLauncher =
         agentSessions.Launcher;
@@ -51,7 +55,9 @@ public sealed class IndexModel(
     private readonly WebHostedWorkerSupervisor hostedWorker = operationsServices.HostedWorker;
     private readonly IContextApprovalService? contextApproval =
         operationsServices.ContextApproval;
-    private readonly string[] agentOptions = agentSessions.AdaptersByName.Keys
+    private readonly string[] agentOptions = agentSessions.AgentDescriptors
+        .Where(descriptor => descriptor.Capabilities.HasFlag(AgentCapabilities.WorkerExecution))
+        .Select(descriptor => descriptor.Id)
         .Order(StringComparer.OrdinalIgnoreCase)
         .ToArray();
 
@@ -66,6 +72,12 @@ public sealed class IndexModel(
     public WebSurfaceCapabilities Capabilities => state.Capabilities;
 
     public IReadOnlyList<string> AgentOptions => agentOptions;
+
+    private IReadOnlyList<AgentOptionView> AgentPolicyOptions() => descriptorsByName.Values
+        .Where(descriptor => descriptor.Capabilities.HasFlag(AgentCapabilities.WorkerExecution))
+        .OrderBy(descriptor => descriptor.Id, StringComparer.OrdinalIgnoreCase)
+        .Select(descriptor => new AgentOptionView(descriptor.Id, descriptor.DisplayName))
+        .ToArray();
 
     public IReadOnlyList<string> PriorityOptions => state.Config.LocalMarkdown?.Priorities ?? [];
 
@@ -532,16 +544,12 @@ public sealed class IndexModel(
             input.UsageFailureMaxAttempts,
             input.UsageFailureResetGraceMinutes,
             input.UsageFailureAllowCrossAgentHandoff,
-            input.UsageFailureClaudeFallbacks,
-            input.UsageFailureCodexFallbacks,
-            input.UsageFailureCopilotFallbacks,
+            input.UsageFailureFallbacks,
             input.LeaseMinutes,
             input.UseWorkerQueue,
             input.RequirementsAssessmentMode,
             input.AgentPermissions,
-            input.ClaudePermissions,
-            input.CodexPermissions,
-            input.CopilotPermissions,
+            input.AgentPermissionOverrides,
             input.WorktreeRoot,
             input.BranchFormat,
             input.WorktreeNameFormat,
@@ -596,12 +604,10 @@ public sealed class IndexModel(
                     input.DefaultAgent,
                     Required(input.RequirementsAssessmentMode, "requirementsAssessmentMode"),
                     Required(input.AgentPermissions, "agentPermissions"),
-                    new Dictionary<string, string?>
-                    {
-                        ["claude"] = input.ClaudePermissions,
-                        ["codex"] = input.CodexPermissions,
-                        ["copilot"] = input.CopilotPermissions
-                    }),
+                    agentOptions.ToDictionary(
+                        agent => agent,
+                        agent => input.AgentPermissionOverrides.GetValueOrDefault(agent),
+                        StringComparer.OrdinalIgnoreCase)),
                 "usage-failure" => UsageFailureMutation(input),
                 "completion" => new CompletionPolicyMutation(
                     Required(input.CompletionCommit, "completionCommit"),
@@ -697,7 +703,7 @@ public sealed class IndexModel(
             input.Agent, input.PretendNotInstalled, kind, input.RetryAfterSeconds);
     }
 
-    private static UsageFailurePolicyMutation UsageFailureMutation(ConfigurationFormInput input) =>
+    private UsageFailurePolicyMutation UsageFailureMutation(ConfigurationFormInput input) =>
         new(
             Required(input.UsageFailureAction, "usageFailureAction"),
             RequiredInvariantDouble(input.UsageFailureInitialRetryMinutes, "usageFailureInitialRetryMinutes"),
@@ -706,12 +712,10 @@ public sealed class IndexModel(
             RequiredInvariantInt(input.UsageFailureMaxAttempts, "usageFailureMaxAttempts"),
             RequiredInvariantDouble(input.UsageFailureResetGraceMinutes, "usageFailureResetGraceMinutes"),
             input.UsageFailureAllowCrossAgentHandoff,
-            new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["claude"] = AgentList(input.UsageFailureClaudeFallbacks),
-                ["codex"] = AgentList(input.UsageFailureCodexFallbacks),
-                ["copilot"] = AgentList(input.UsageFailureCopilotFallbacks)
-            });
+            agentOptions.ToDictionary(
+                agent => agent,
+                agent => AgentList(input.UsageFailureFallbacks.GetValueOrDefault(agent)),
+                StringComparer.OrdinalIgnoreCase));
 
     private static IReadOnlyList<string> AgentList(string? value) =>
         (value ?? string.Empty)
@@ -865,6 +869,7 @@ public sealed class IndexModel(
             feedback.ConfigurationDraft,
             user,
             agentRuntimeCatalog.Snapshot().Agents,
+            agentSessions.AgentDescriptors,
             await LoadAgentModelsAsync(cancellationToken),
             configurationResult.Workers,
             locations,
@@ -1246,7 +1251,7 @@ public sealed class IndexModel(
         item.ExecutionProfile,
         item.CreatedAt);
 
-    private static string? RecoveryLabel(AgentSessionRecord? session) =>
+    private string? RecoveryLabel(AgentSessionRecord? session) =>
         session is { IsComplete: true, FromCurrentInstallation: true, Agent: { } agent }
             ? $"{AgentDisplayName(agent)} session retained here"
             : null;
@@ -1381,9 +1386,8 @@ public sealed class IndexModel(
         public bool UseWorkerQueue { get; set; }
         public string? RequirementsAssessmentMode { get; set; }
         public string? AgentPermissions { get; set; }
-        public string? ClaudePermissions { get; set; }
-        public string? CodexPermissions { get; set; }
-        public string? CopilotPermissions { get; set; }
+        public Dictionary<string, string?> AgentPermissionOverrides { get; set; } =
+            new(StringComparer.OrdinalIgnoreCase);
         public string? WorktreeRoot { get; set; }
         public string? BranchFormat { get; set; }
         public string? WorktreeNameFormat { get; set; }
@@ -1422,9 +1426,8 @@ public sealed class IndexModel(
         public string? UsageFailureMaxAttempts { get; set; }
         public string? UsageFailureResetGraceMinutes { get; set; }
         public bool UsageFailureAllowCrossAgentHandoff { get; set; }
-        public string? UsageFailureClaudeFallbacks { get; set; }
-        public string? UsageFailureCodexFallbacks { get; set; }
-        public string? UsageFailureCopilotFallbacks { get; set; }
+        public Dictionary<string, string?> UsageFailureFallbacks { get; set; } =
+            new(StringComparer.OrdinalIgnoreCase);
         public bool ApproveCanonicalization { get; set; }
     }
 
@@ -1735,7 +1738,8 @@ public sealed class IndexModel(
             creationStatuses,
             local.Priorities,
             state.Config.EffectiveWorker.UseWorkerQueue,
-            state.Config.DefaultPickFrom));
+            state.Config.DefaultPickFrom,
+            AvailableAgents: AgentPolicyOptions()));
     }
 
     public async Task<IActionResult> OnPostCreateAsync(
@@ -1772,7 +1776,8 @@ public sealed class IndexModel(
             creationStatuses,
             local.Priorities,
             queueAuthorizesExecution,
-            state.Config.DefaultPickFrom);
+            state.Config.DefaultPickFrom,
+            AvailableAgents: AgentPolicyOptions());
 
         if (body.Length > MaximumBodyLength)
         {
@@ -2782,7 +2787,7 @@ public sealed class IndexModel(
         return [];
     }
 
-    private static CardActionView LaunchChoiceAction(
+    private CardActionView LaunchChoiceAction(
         string agent,
         string vendor,
         string sessionId,
@@ -2833,7 +2838,7 @@ public sealed class IndexModel(
         ExpectedSessionId: sessionId,
         ExpectedSessionGeneration: generation);
 
-    private static CardActionView DesktopLaunchAction(
+    private CardActionView DesktopLaunchAction(
         string agent,
         string vendor,
         string sessionId,
@@ -2872,7 +2877,7 @@ public sealed class IndexModel(
         return message;
     }
 
-    private static string DesktopCardConfirmation(string agent, DesktopLaunchAddress desktop)
+    private string DesktopCardConfirmation(string agent, DesktopLaunchAddress desktop)
     {
         // Desktop cannot be handed the claim the way a terminal can: the vendor's only integration
         // point is a deep link, which must not carry a scoped credential. So the operator holds
@@ -3680,7 +3685,8 @@ public sealed class IndexModel(
             CreatedAt: item.CreatedAt,
             UpdatedAt: item.UpdatedAt,
             QueueAuthorizesExecution: state.Config.EffectiveWorker.UseWorkerQueue,
-            WorkerQueueStatus: state.Config.DefaultPickFrom);
+            WorkerQueueStatus: state.Config.DefaultPickFrom,
+            AvailableAgents: AgentPolicyOptions());
     }
 
     // Reads the durable recorded session (which survives claim release, unlike editable.Claim) and,
@@ -3784,7 +3790,7 @@ public sealed class IndexModel(
         HasResumeAddress(claim) &&
         ClaimantKinds.FromStorageValue(claim.ClaimantKind) == ClaimantKind.Agent &&
         claim.Agent is not null
-            ? WorkerPrompt.ForResume(id, claim.Agent)
+            ? adaptersByName[claim.Agent].DecorateResumePrompt(WorkerPrompt.ForResume(id))
             : null;
 
     private bool HasResumeAddress(WorkItemClaimSummary claim) =>
@@ -3884,7 +3890,7 @@ public sealed class IndexModel(
         return true;
     }
 
-    private static string? CliUnavailableReason(
+    private string? CliUnavailableReason(
         string agent,
         WorkItemClaimSummary claim,
         bool ownsHuman,
@@ -4170,12 +4176,14 @@ public sealed class IndexModel(
             ? expectedUuid == actualUuid
             : string.Equals(expected, actual, StringComparison.Ordinal);
 
-    private static string AgentDisplayName(string agent) =>
-        string.IsNullOrEmpty(agent)
-            ? "Agent"
-            : char.ToUpperInvariant(agent[0]) + agent[1..];
+    private string AgentDisplayName(string agent) =>
+        descriptorsByName.TryGetValue(agent, out var descriptor)
+            ? descriptor.DisplayName
+            : string.IsNullOrEmpty(agent)
+                ? "Agent"
+                : char.ToUpperInvariant(agent[0]) + agent[1..];
 
-    private static string CliOwnershipGuidance(
+    private string CliOwnershipGuidance(
         string agent,
         WorkItemClaimSummary claim,
         bool ownsHuman)
@@ -4471,17 +4479,8 @@ public sealed class IndexModel(
         _ => "Claimed by another Wrighty installation"
     };
 
-    private static string? AgentLabel(WorkItemClaimSummary claim)
-    {
-        return AgentKey(claim) switch
-        {
-            "codex" => "Codex",
-            "claude" => "Claude",
-            "copilot" => "Copilot",
-            { } agent => AgentDisplayName(agent),
-            _ => null
-        };
-    }
+    private string? AgentLabel(WorkItemClaimSummary claim) =>
+        AgentKey(claim) is { } agent ? AgentDisplayName(agent) : null;
 
     private static string? AgentKey(WorkItemClaimSummary claim)
     {
@@ -4505,14 +4504,10 @@ public sealed class IndexModel(
         return agent.ToLowerInvariant();
     }
 
-    private static string? RecordedAgentLabel(WorkItemClaimSummary claim) =>
-        claim.Agent?.Trim().ToLowerInvariant() switch
-        {
-            "codex" => "Codex",
-            "claude" => "Claude",
-            "copilot" => "Copilot",
-            _ => null
-        };
+    private string? RecordedAgentLabel(WorkItemClaimSummary claim) =>
+        claim.Agent is { } agent && descriptorsByName.ContainsKey(agent.Trim())
+            ? AgentDisplayName(agent.Trim())
+            : null;
 
     private static string? ClaimantKindLabel(WorkItemClaimSummary claim)
     {

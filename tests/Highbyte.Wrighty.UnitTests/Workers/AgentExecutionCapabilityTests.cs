@@ -116,13 +116,21 @@ public sealed class AgentExecutionCapabilityTests
     {
         // Uses `echo` rather than a vendor, so the test does not depend on which agents happen to
         // be installed on the machine running it.
-        var probe = new AgentVersionProbe(new PathExecutableResolver());
-        var version = await probe.TryGetVersionAsync("echo", CancellationToken.None);
+        var registry = new AgentRegistry([
+            new AgentIntegration(new AgentDescriptor(
+                "test-agent",
+                "Test Agent",
+                "Test Vendor",
+                "echo",
+                AgentCapabilities.None))
+        ]);
+        var probe = new AgentVersionProbe(new PathExecutableResolver(), registry: registry);
+        var version = await probe.TryGetVersionAsync("test-agent", CancellationToken.None);
 
         // `echo --version` prints "--version" on macOS/BSD and a GNU banner on Linux; either way a
         // zero exit means the first non-empty line is what gets recorded.
         Assert.False(string.IsNullOrWhiteSpace(version));
-        Assert.Equal(version, await probe.TryGetVersionAsync("echo", CancellationToken.None));
+        Assert.Equal(version, await probe.TryGetVersionAsync("test-agent", CancellationToken.None));
     }
 
     [Fact]
