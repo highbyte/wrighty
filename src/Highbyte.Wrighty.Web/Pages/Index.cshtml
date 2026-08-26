@@ -86,7 +86,7 @@
           <div class="board-toolbar-row">
           <form id="board-filters" hx-get="/?handler=Board" hx-target="#board-content" hx-swap="outerHTML"
                 hx-disabled-elt="#reset-board-view">
-            <label>Search <input id="board-search" type="search" autocomplete="off" placeholder="ID, title, status, or priority"></label>
+            <label>Search <input id="board-search" name="q" type="search" autocomplete="off" placeholder="ID, title, status, or priority"></label>
             <label>Scope
               <select name="scope">
                 <option value="active">Active</option>
@@ -240,8 +240,7 @@
                 autofocus>Cancel</button>
         <button id="confirmation-dialog-accept"
                 class="primary"
-                type="submit"
-                value="confirm">Continue</button>
+                type="button">Continue</button>
       </footer>
     </form>
   </dialog>

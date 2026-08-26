@@ -26,9 +26,48 @@ function control(index) {
 }
 
 test("captures only a focused per-column sort control", () => {
-  assert.equal(captureBoardControlFocus({ activeElement: control("2") }), "2");
+  assert.equal(captureBoardControlFocus({ activeElement: control("2") }), "sort:2");
   assert.equal(captureBoardControlFocus({ activeElement: { matches: () => false } }), null);
   assert.equal(captureBoardControlFocus({ activeElement: null }), null);
+});
+
+test("captures and restores a bulk action by semantic form id", () => {
+  const button = {
+    matches: () => false,
+    closest: selector => selector === "[data-board-bulk-action]"
+      ? { id: "board-bulk-resume-column-2" }
+      : null
+  };
+  const replacement = { focused: false, focus() { this.focused = true; } };
+  const doc = {
+    activeElement: button,
+    getElementById: id => id === "board-bulk-resume-column-2"
+      ? { querySelector: () => replacement }
+      : null,
+    querySelector: () => null,
+    querySelectorAll: () => []
+  };
+
+  const key = captureBoardControlFocus(doc);
+  assert.equal(key, "bulk:board-bulk-resume-column-2");
+  assert.equal(restoreBoardControlFocus(doc, key), true);
+  assert.equal(replacement.focused, true);
+});
+
+test("bulk focus falls back to the originating column when its action disappears", () => {
+  const heading = { focused: false, focus() { this.focused = true; } };
+  const doc = {
+    getElementById: () => null,
+    querySelector: selector => selector === '[data-board-column-index="2"] h2'
+      ? heading
+      : null,
+    querySelectorAll: () => []
+  };
+
+  assert.equal(
+    restoreBoardControlFocus(doc, "bulk:board-bulk-resume-column-2"),
+    true);
+  assert.equal(heading.focused, true);
 });
 
 test("direction buttons announce state and select the opposite direction", () => {

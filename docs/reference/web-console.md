@@ -346,14 +346,27 @@ both directions.
 
 Structured Board filters narrow claimant kind, associated agent, priority, claim ownership,
 and update recency. The associated agent is the active claim's agent when present, then the retained
-session's agent, then the item's effective agent policy. The filters compose with the instant client-side text search: structured facts are
-evaluated by Wrighty, while the search box narrows the returned cards by visible text. Active
+session's agent, then the item's effective agent policy. The filters compose with the instant text
+search: the browser narrows the visible cards immediately, then Wrighty resolves the same bounded
+search on the server so column actions use exactly that displayed result. Active
 filters appear as removable chips, column counts and empty states reflect the narrowed result, and
 **Clear all** resets the controls. Filter and sort state survives polling and fragment refreshes but
 intentionally resets on a full page reload.
 The anchored **Filters** panel closes from its top-right close control or an outside click. Its
 **Agent** chooser uses the web server's registered agent-adapter inventory, the same supported-agent
 source used by creation, editing, Settings, and launch flows.
+
+When at least one shown card in a configured column offers an ordinary workflow action, the
+column header offers **Queue all**, **Send back all**, or **Resume all** with the eligible count.
+Every bulk action opens a server-generated preview of the current filtered set and requires
+confirmation. Wrighty freezes at most 100 canonical item IDs in a five-minute process-local intent,
+then rechecks each item and runs the same single-item transition sequentially. Newly eligible items
+are not swept in, claimed or stale items are skipped without takeover, and a systemic failure stops
+the remaining sequence without rolling back completed changes. A fully successful batch completes
+without a notification. If any item is skipped, fails, or is left unprocessed, a warning with the
+affected items stays on the Board until dismissed or replaced. **Resume all** queues retained
+sessions for a continuous worker; it does not start vendor agents in the web request, choose worker
+execution order, or add clarification.
 
 Cards show their last-update time as a local relative value after the page loads; the `datetime`
 attribute and hover text retain the absolute UTC instant. Item details show both creation and update

@@ -24,9 +24,9 @@ class FakeElement {
     this.listeners.set(type, listeners);
   }
 
-  dispatch(type) {
+  dispatch(type, event = {}) {
     const listeners = this.listeners.get(type) ?? [];
-    listeners.forEach(({ listener }) => listener());
+    listeners.forEach(({ listener }) => listener(event));
     this.listeners.set(type, listeners.filter(({ once }) => !once));
   }
 
@@ -139,6 +139,38 @@ test("confirmation presents the requested content and restores focus", async () 
   assert.equal(await result, true);
   assert.equal(trigger.focusCount, 1);
   assert.equal("tone" in dialog.dataset, false);
+});
+
+test("accept explicitly closes with a confirmed return value", async () => {
+  const harness = createHarness();
+  const dialog = harness.element("#confirmation-dialog");
+  const result = harness.controller.requestConfirmation({ message: "Move these items?" });
+  const click = cancellableEvent();
+
+  harness.element("#confirmation-dialog-accept").dispatch("click", click);
+
+  assert.equal(click.defaultPrevented, true);
+  assert.equal(dialog.open, false);
+  assert.equal(dialog.returnValue, "confirm");
+  assert.equal(await result, true);
+});
+
+test("an open confirmation protects its originating control from replacement", async () => {
+  const harness = createHarness();
+  const dialog = harness.element("#confirmation-dialog");
+  const trigger = new FakeElement(harness.document);
+  const containingRegion = { contains: element => element === trigger };
+  const otherRegion = { contains: () => false };
+  const result = harness.controller.requestConfirmation(
+    { message: "Move these items?" },
+    trigger);
+
+  assert.equal(harness.controller.wouldReplaceTrigger(containingRegion), true);
+  assert.equal(harness.controller.wouldReplaceTrigger(otherRegion), false);
+
+  dialog.close("cancel");
+  assert.equal(await result, false);
+  assert.equal(harness.controller.wouldReplaceTrigger(containingRegion), false);
 });
 
 test("an open confirmation rejects a second request", async () => {

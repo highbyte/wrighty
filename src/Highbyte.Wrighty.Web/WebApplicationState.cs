@@ -40,6 +40,8 @@ public sealed class WebApplicationState(
             ? "GITHUB PROJECT"
             : "LOCAL MARKDOWN";
     public string? ActiveConfigurationRevision => ActiveConfiguration.Revision;
+    public string? ConfigurationRevision =>
+        requestConfiguration.Value?.Revision ?? ActiveConfiguration.Revision;
     public string? Token { get; } = token;
     public bool TokenAuthenticationRequired { get; } = tokenAuthenticationRequired;
     public string WorkspacePath { get; } = ResolveWorkspacePath(config, workingDirectory);

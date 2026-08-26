@@ -19,7 +19,8 @@ public sealed record BoardPageModel(
     string? ErrorCode = null,
     string? ErrorMessage = null,
     IReadOnlyList<ProviderCapacityView>? ProviderCapacity = null,
-    BoardListQuery? Query = null)
+    BoardListQuery? Query = null,
+    BoardBatchResult? BatchResult = null)
 {
     public IReadOnlyList<ProviderCapacityView> EffectiveProviderCapacity =>
         ProviderCapacity ?? [];
@@ -31,10 +32,22 @@ public sealed record BoardColumnModel(
     string Name,
     IReadOnlyList<BoardCardModel> Cards,
     int Index = 0,
-    ItemSort? Sort = null)
+    ItemSort? Sort = null,
+    BoardBulkActionView? BulkAction = null)
 {
     public ItemSort EffectiveSort => Sort ?? ItemSort.Default;
 }
+
+public sealed record BoardBulkActionView(
+    string Id,
+    string IntentId,
+    string Label,
+    string Description,
+    string ConfirmTitle,
+    string ConfirmMessage,
+    string ConfirmAction,
+    int EligibleCount,
+    int ShownCount);
 
 public sealed record BoardCardModel(
     string Id,

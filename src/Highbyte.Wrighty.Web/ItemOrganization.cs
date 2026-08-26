@@ -28,6 +28,7 @@ public readonly record struct ItemSort(ItemSortField Field, bool Descending)
 
 public sealed class BoardListInput
 {
+    public string? Q { get; set; }
     public string? Scope { get; set; }
     public string? Sort { get; set; }
     public string[]? ColumnSort { get; set; }
@@ -39,6 +40,7 @@ public sealed class BoardListInput
 }
 
 public sealed record BoardListQuery(
+    string? Search,
     ItemSort Sort,
     IReadOnlyDictionary<int, ItemSort> ColumnSorts,
     IReadOnlySet<string> ClaimKinds,
@@ -70,6 +72,7 @@ public sealed record BoardListQuery(
         if (updated is not ("today" or "7d" or "30d")) updated = null;
 
         return new BoardListQuery(
+            ParseSearch(input.Q),
             ParseSort(input.Sort),
             columns,
             Known(input.ClaimKind, ["unclaimed", "human", "agent", "automation", "unknown"]),
@@ -82,11 +85,15 @@ public sealed record BoardListQuery(
     public ItemSort SortForColumn(int index) =>
         ColumnSorts.TryGetValue(index, out var value) ? value : Sort;
 
-    public bool HasFilters => ClaimKinds.Count > 0 || Agents.Count > 0 || Priorities.Count > 0 ||
+    public bool HasStructuredFilters => ClaimKinds.Count > 0 || Agents.Count > 0 || Priorities.Count > 0 ||
         ClaimStates.Count > 0 || UpdatedWithin is not null;
+
+    public bool HasFilters => Search is not null || HasStructuredFilters;
 
     public bool Matches(BoardCardModel card, DateTimeOffset now)
     {
+        if (Search is { } search && !SearchText(card).Contains(search, StringComparison.OrdinalIgnoreCase))
+            return false;
         if (ClaimKinds.Count > 0 && !ClaimKinds.Contains(ClaimKind(card))) return false;
         if (Agents.Count > 0 && (card.AgentKey is null || !Agents.Contains(card.AgentKey))) return false;
         if (Priorities.Count > 0 &&
@@ -101,7 +108,7 @@ public sealed record BoardListQuery(
         get
         {
             var builder = new StringBuilder();
-            builder.Append(Sort.Key);
+            builder.Append("search:").Append(Search ?? string.Empty).Append('\n').Append(Sort.Key);
             Append(builder, "columns", ColumnSorts.OrderBy(value => value.Key)
                 .Select(value => $"{value.Key}:{value.Value.Key}"));
             Append(builder, "claim-kind", ClaimKinds);
@@ -153,6 +160,24 @@ public sealed record BoardListQuery(
 
     internal static string? Normalize(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
+
+    private static string? ParseSearch(string? value)
+    {
+        var normalized = string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        return normalized is { Length: <= 200 } && !normalized.Any(char.IsControl)
+            ? normalized
+            : null;
+    }
+
+    private static string SearchText(BoardCardModel card) => string.Join(' ',
+        card.DisplayId,
+        card.Title,
+        card.Status,
+        card.Priority,
+        card.ClaimantKindLabel,
+        card.AgentLabel,
+        OperationalStatusDisplay.Label(card.OperationalStatus, card.AgentLabel),
+        card.ProviderBlock?.Reason);
 
     private static string ClaimKind(BoardCardModel card) => card.ClaimState switch
     {
