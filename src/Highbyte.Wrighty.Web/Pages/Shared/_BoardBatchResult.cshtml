@@ -1,0 +1,45 @@
+@model BoardBatchResult
+@{
+  var action = Model.Action switch
+  {
+    BoardBatchAction.Queue => "Queue all",
+    BoardBatchAction.Dequeue => "Send back all",
+    _ => "Resume all"
+  };
+  var aborted = Model.AbortedCount > 0
+    ? $", {Model.AbortedCount} not processed"
+    : string.Empty;
+}
+<aside class="board-batch-result warning" role="alert" aria-labelledby="board-batch-result-title">
+  <header>
+    <h2 id="board-batch-result-title">@action warning</h2>
+    <form hx-post="/?handler=DismissBoardBatch" hx-target="#board-batch-result" hx-swap="innerHTML">
+      @Html.AntiForgeryToken()
+      <input type="hidden" name="intentId" value="@Model.IntentId">
+      <button type="submit" aria-label="Dismiss @action warning">×</button>
+    </form>
+  </header>
+  <p><strong>@Model.NotProcessedCount item@(Model.NotProcessedCount == 1 ? "" : "s") could not be processed.</strong>
+    @Model.SucceededCount completed successfully; @Model.SkippedCount skipped,
+    @Model.FailedCount failed@(aborted).</p>
+  @if (Model.AbortReason is not null)
+  {
+    <p class="error">@Model.AbortReason</p>
+  }
+  @if (Model.Items.Any(item => !item.Succeeded))
+  {
+    <details>
+      <summary>Review items not processed</summary>
+      <ul>
+        @foreach (var item in Model.Items.Where(item => !item.Succeeded).Take(100))
+        {
+          <li>
+            <button type="button" hx-get="/?handler=Item&amp;id=@Uri.EscapeDataString(item.Id)"
+                    hx-target="#item-panel" hx-swap="innerHTML">@item.DisplayId</button>
+            — @item.Reason
+          </li>
+        }
+      </ul>
+    </details>
+  }
+</aside>

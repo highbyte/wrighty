@@ -1,13 +1,20 @@
 export function captureBoardControlFocus(doc) {
   const active = doc.activeElement;
-  if (!active?.matches?.("[data-board-column-sort-index]")) return null;
-  return active.dataset.boardColumnSortIndex || null;
+  if (active?.matches?.("[data-board-column-sort-index]"))
+    return `sort:${active.dataset.boardColumnSortIndex}`;
+  const batch = active?.closest?.("[data-board-bulk-action]");
+  return batch?.id ? `bulk:${batch.id}` : null;
 }
 
-export function restoreBoardControlFocus(doc, columnIndex) {
-  if (columnIndex === null) return false;
-  const control = [...doc.querySelectorAll("[data-board-column-sort-index]")]
-    .find(value => value.dataset.boardColumnSortIndex === columnIndex);
+export function restoreBoardControlFocus(doc, key) {
+  if (key === null) return false;
+  const bulkId = key.startsWith("bulk:") ? key.slice("bulk:".length) : null;
+  const columnIndex = bulkId?.match(/-column-(\d+)$/)?.[1];
+  const control = bulkId !== null
+    ? doc.getElementById(bulkId)?.querySelector("button") ||
+      doc.querySelector?.(`[data-board-column-index="${columnIndex}"] h2`)
+    : [...doc.querySelectorAll("[data-board-column-sort-index]")]
+      .find(value => value.dataset.boardColumnSortIndex === key.replace(/^sort:/, ""));
   if (!control) return false;
   control.focus();
   return true;

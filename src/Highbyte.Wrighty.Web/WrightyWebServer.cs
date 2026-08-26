@@ -433,6 +433,8 @@ public sealed class WrightyWebServer(
         string.Equals(handler, "UpdateAgentSkill", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "UninstallSkill", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(handler, "MaintainAllSkills", StringComparison.OrdinalIgnoreCase) ||
+        // Dismissing a retained Board result changes only process-local presentation state.
+        string.Equals(handler, "DismissBoardBatch", StringComparison.OrdinalIgnoreCase) ||
         // Opening a retained vendor session operates on Wrighty's local claim/session control
         // plane, not backend-owned item content. Operations offers these on both Local Markdown
         // and GitHub, so they are shared even though their target is one item.

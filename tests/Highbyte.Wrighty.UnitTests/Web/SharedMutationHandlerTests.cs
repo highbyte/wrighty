@@ -27,7 +27,7 @@ public sealed class SharedMutationHandlerTests
         // Queue and panel actions belong to the Local Markdown item surface. Operations' direct
         // OpenSession actions are shared instead: they change Wrighty's claim/session metadata,
         // not backend-owned item content.
-        "ResumeSession", "HoldSession", "QueueForWorker",
+        "ResumeSession", "HoldSession", "QueueForWorker", "ExecuteBoardBatch",
         "LaunchAgentCli", "LaunchAgentDesktop"
     };
 
@@ -80,6 +80,7 @@ public sealed class SharedMutationHandlerTests
     [InlineData("UpdateAgentSkill")]
     [InlineData("UninstallSkill")]
     [InlineData("MaintainAllSkills")]
+    [InlineData("DismissBoardBatch")]
     [InlineData("OpenSessionCli")]
     [InlineData("OpenSessionDesktop")]
     public void Machine_local_and_provider_posts_survive_a_backend_that_owns_its_items(string handler) =>

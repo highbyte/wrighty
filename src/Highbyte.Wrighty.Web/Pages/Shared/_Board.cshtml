@@ -8,7 +8,8 @@
     .ToArray();
 }
 <section id="board-content" class="board-region" data-revision="@Model.Revision"
-         data-structured-filter-count="@(Model.EffectiveQuery.HasFilters ? Model.Columns.Sum(column => column.Cards.Count) + Model.Archived.Count : null)"
+         data-batch-search="@Model.EffectiveQuery.Search"
+         data-structured-filter-count="@(Model.EffectiveQuery.HasStructuredFilters ? Model.Columns.Sum(column => column.Cards.Count) + Model.Archived.Count : null)"
          data-attention-count="@(Model.Scope == "archived" ? null : attention.Length.ToString())"
          hx-get="/?handler=Board" hx-trigger="wrighty:refresh" hx-include="#board-filters" hx-swap="outerHTML">
   @if (Model.ErrorCode is not null)
@@ -17,7 +18,13 @@
   }
   else
   {
-    @if (Model.EffectiveQuery.HasFilters)
+    <div id="board-batch-result" class="board-batch-result-region" aria-live="polite">
+      @if (Model.BatchResult is { HasIssues: true })
+      {
+        <partial name="Shared/_BoardBatchResult" model="Model.BatchResult" />
+      }
+    </div>
+    @if (Model.EffectiveQuery.HasStructuredFilters)
     {
       <div class="active-filter-chips" aria-label="Active board filters">
         @foreach (var value in Model.EffectiveQuery.ClaimKinds){<button type="button" data-clear-board-filter="claimKind" data-clear-board-value="@value">Claimant: @value <span aria-hidden="true">×</span></button>}
@@ -56,14 +63,42 @@
       @foreach (var column in Model.Columns)
       {
         var countDescription = $"{column.Cards.Count} item{(column.Cards.Count == 1 ? "" : "s")} currently shown in this column.";
-        <section class="column" data-drop-status="@column.Name"
+        var bulkAction = column.BulkAction;
+        <section class="column" data-drop-status="@column.Name" data-board-column-index="@column.Index"
                  aria-labelledby="column-@column.Name.GetHashCode()">
           <header>
-            <div class="column-heading">
-              <h2 id="column-@column.Name.GetHashCode()">@column.Name</h2>
-              <label class="column-sort-label">
-                <span class="visually-hidden">Sort @column.Name</span>
-                <span class="sort-control">
+            <div class="column-title-row">
+              <h2 id="column-@column.Name.GetHashCode()" tabindex="-1">@column.Name</h2>
+              @if (bulkAction is not null)
+              {
+                <form id="board-bulk-@bulkAction.Id-column-@column.Index"
+                      class="column-bulk-action"
+                      hx-post="/?handler=ExecuteBoardBatch"
+                      hx-target="#board-batch-result" hx-swap="innerHTML"
+                      hx-disabled-elt="find button"
+                      data-board-bulk-action="@bulkAction.Id"
+                      data-confirm-title="@bulkAction.ConfirmTitle"
+                      data-confirm-message="@bulkAction.ConfirmMessage"
+                      data-confirm-action="@bulkAction.ConfirmAction">
+                  @Html.AntiForgeryToken()
+                  <input type="hidden" name="intentId" value="@bulkAction.IntentId">
+                  <button type="submit" title="@bulkAction.Description">@bulkAction.Label</button>
+                </form>
+              }
+              <span class="column-count has-tooltip"
+                    data-visible-count
+                    data-total-count="@column.Cards.Count"
+                    data-tooltip="@countDescription"
+                    aria-label="@countDescription"
+                    tabindex="0">@column.Cards.Count</span>
+            </div>
+            @if (bulkAction is not null && bulkAction.EligibleCount != bulkAction.ShownCount)
+            {
+              <p class="column-bulk-eligibility" role="note">@bulkAction.Description</p>
+            }
+            <label class="column-sort-label">
+              <span class="visually-hidden">Sort @column.Name</span>
+              <span class="sort-control">
                 <select id="column-sort-@column.Index" class="column-sort" name="columnSort" form="board-filters" data-sort-select
                         data-board-column-sort-index="@column.Index"
                         aria-label="Sort @column.Name column">
@@ -81,15 +116,8 @@
                 </select>
                 <button type="button" class="sort-direction" data-sort-direction-for="column-sort-@column.Index"
                         aria-pressed="false" aria-label="Default ordering has no direction toggle" disabled>↕</button>
-                </span>
-              </label>
-            </div>
-            <span class="column-count has-tooltip"
-                  data-visible-count
-                  data-total-count="@column.Cards.Count"
-                  data-tooltip="@countDescription"
-                  aria-label="@countDescription"
-                  tabindex="0">@column.Cards.Count</span>
+              </span>
+            </label>
           </header>
           <div class="cards">
             @if (column.Cards.Count == 0)

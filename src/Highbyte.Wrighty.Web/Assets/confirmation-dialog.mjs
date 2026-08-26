@@ -4,6 +4,15 @@ export function installConfirmationDialog({ document, closePanel }) {
   const message = document.querySelector("#confirmation-dialog-message");
   const cancel = document.querySelector("#confirmation-dialog-cancel");
   const accept = document.querySelector("#confirmation-dialog-accept");
+  let protectedTrigger = null;
+
+  // Complete the dialog explicitly instead of depending on form[method=dialog] to copy the
+  // submit button's value into dialog.returnValue. The confirmed HTMX request resumes from the
+  // close event, so a browser that closes with an empty return value silently cancels the action.
+  accept.addEventListener("click", event => {
+    event.preventDefault();
+    dialog.close("confirm");
+  });
 
   function requestConfirmation(
     { title: heading = "Confirm action", message: detail, action = "Continue", tone = "" },
@@ -19,10 +28,12 @@ export function installConfirmationDialog({ document, closePanel }) {
     dialog.returnValue = "";
     dialog.dataset.tone = tone === "danger" ? "danger" : "default";
     const restoreFocus = typeof trigger?.focus === "function" ? trigger : null;
+    protectedTrigger = trigger?.isConnected ? trigger : null;
 
     return new Promise(resolve => {
       dialog.addEventListener("close", () => {
         const confirmed = dialog.returnValue === "confirm";
+        protectedTrigger = null;
         delete dialog.dataset.tone;
         if (restoreFocus?.isConnected) restoreFocus.focus();
         resolve(confirmed);
@@ -117,5 +128,12 @@ export function installConfirmationDialog({ document, closePanel }) {
     return true;
   }
 
-  return { handleKeydown, requestConfirmation };
+  function wouldReplaceTrigger(target) {
+    return Boolean(
+      protectedTrigger?.isConnected &&
+      typeof target?.contains === "function" &&
+      target.contains(protectedTrigger));
+  }
+
+  return { handleKeydown, requestConfirmation, wouldReplaceTrigger };
 }

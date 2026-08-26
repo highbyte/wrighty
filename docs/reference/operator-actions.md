@@ -66,6 +66,7 @@ to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage
 | Release a claim | **Direct:** own-claim and guarded override controls | No native fenced Wrighty action | **Direct** | [Recovery paths](claims.md#recovery-paths) |
 | Clarify a paused item and preserve its recorded session | **Direct:** edit with explicit queue, hand-back, release, or retain choices | **Direct:** issue content can be clarified; use Wrighty for the claim/session transition | **Direct:** atomic edit/takeover and continuation paths | [Clarify and resume the same session](../workflows.md#clarify-an-item-and-resume-the-same-agent-session) |
 | Queue a paused recorded session for a continuous worker | **Direct** | **Guidance:** status comment supplies the Wrighty path | **Direct** | [Clarify and resume the same session](../workflows.md#clarify-an-item-and-resume-the-same-agent-session) |
+| Queue, send back, or resume multiple eligible Board cards | **Direct for Local Markdown:** confirmed column actions process the frozen filtered set sequentially, up to 100 at a time | Not available | Repeat the corresponding single-item action | [Web console](web-console.md) |
 | Hand a claim back for interactive continuation | **Direct:** produces the fenced resume command and can open its CLI on macOS or native Windows | **Guidance:** status comment supplies the recording-installation path | **Direct:** produces or executes the resume command | [The two-path resume model](worker.md#the-two-path-resume-model) |
 
 ## Run and resume agents

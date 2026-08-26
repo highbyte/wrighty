@@ -67,6 +67,22 @@ public sealed class ItemOrganizationTests
     }
 
     [Fact]
+    public void Board_search_is_server_resolved_and_bounded_for_batch_scope()
+    {
+        var query = BoardListQuery.Parse(new BoardListInput { Q = "  LOCAL:1  " });
+
+        Assert.True(query.HasFilters);
+        Assert.False(query.HasStructuredFilters);
+        Assert.Equal("LOCAL:1", query.Search);
+        Assert.True(query.Matches(Card("local:1", "P1"), Now));
+        Assert.False(query.Matches(Card("local:2", "P1"), Now));
+
+        var oversized = BoardListQuery.Parse(new BoardListInput { Q = new string('x', 201) });
+        Assert.Null(oversized.Search);
+        Assert.False(oversized.HasFilters);
+    }
+
+    [Fact]
     public void Timestamp_sort_keeps_missing_values_last_in_both_directions()
     {
         var older = Card("local:2", updatedAt: Now.AddDays(-2));

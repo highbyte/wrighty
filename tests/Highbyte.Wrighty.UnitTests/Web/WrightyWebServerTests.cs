@@ -117,7 +117,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.True(
             shell.IndexOf("id=\"item-panel\"", StringComparison.Ordinal) <
             shell.IndexOf("id=\"confirmation-dialog\"", StringComparison.Ordinal));
-        Assert.DoesNotContain("name=\"q\"", shell);
+        Assert.Contains("id=\"board-search\" name=\"q\"", shell);
         Assert.DoesNotContain(">Load scope<", shell);
 
         var unauthorized = await client.GetAsync($"{host.Origin}/?handler=Board");
@@ -169,10 +169,10 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var agentBoardHtml = await (await client.SendAsync(agentBoardRequest)).Content.ReadAsStringAsync();
         Assert.Contains("Hostile item", agentBoardHtml);
 
-        using var ignoredQueryRequest = new HttpRequestMessage(HttpMethod.Get, $"{host.Origin}/?handler=Board&q=does-not-match");
-        ignoredQueryRequest.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
-        var ignoredQuery = await client.SendAsync(ignoredQueryRequest);
-        Assert.Contains("Hostile item", await ignoredQuery.Content.ReadAsStringAsync());
+        using var searchedBoardRequest = new HttpRequestMessage(HttpMethod.Get, $"{host.Origin}/?handler=Board&q=does-not-match");
+        searchedBoardRequest.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
+        var searchedBoard = await client.SendAsync(searchedBoardRequest);
+        Assert.DoesNotContain("Hostile item", await searchedBoard.Content.ReadAsStringAsync());
 
         using var unchangedRequest = new HttpRequestMessage(HttpMethod.Get, $"{host.Origin}/?handler=Board");
         unchangedRequest.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
@@ -2011,6 +2011,252 @@ public sealed partial class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
+    public async Task Board_bulk_queue_freezes_filtered_candidates_revalidates_and_is_idempotent()
+    {
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var createRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var createForm = await (await client.SendAsync(createRequest)).Content.ReadAsStringAsync();
+        using var created = await PostForm(client, host, "Create", new()
+        {
+            ["title"] = "Web batch candidate",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["creationAttemptId"] = HiddenValue(createForm, "creationAttemptId")
+        });
+        var newId = await StoredItemId("Web batch candidate");
+        var existingId = await StoredItemId("Web claim item");
+
+        using var previewRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Board&q=Web");
+        var preview = await (await client.SendAsync(previewRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("data-batch-search=\"Web\"", preview);
+        Assert.Contains("id=\"board-bulk-queue-column-0\"", preview);
+        Assert.Contains("Queue all (2)", preview);
+        Assert.Contains("Frozen preview (2 of 2 eligible; 2 shown)", preview);
+        var bulkActionIndex = preview.IndexOf("id=\"board-bulk-queue-column-0\"", StringComparison.Ordinal);
+        var countIndex = preview.IndexOf("class=\"column-count", bulkActionIndex, StringComparison.Ordinal);
+        var titleRowEndIndex = preview.IndexOf("</div>", bulkActionIndex, StringComparison.Ordinal);
+        Assert.True(bulkActionIndex < countIndex && countIndex < titleRowEndIndex);
+        var intentId = HiddenValue(preview, "intentId");
+
+        // A newly matching card is not part of the frozen preview.
+        using var lateCreateRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var lateCreateForm = await (await client.SendAsync(lateCreateRequest)).Content.ReadAsStringAsync();
+        using var lateCreated = await PostForm(client, host, "Create", new()
+        {
+            ["title"] = "Web late arrival",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["creationAttemptId"] = HiddenValue(lateCreateForm, "creationAttemptId")
+        });
+        var lateId = await StoredItemId("Web late arrival");
+
+        // A frozen candidate that becomes claimed is skipped rather than taken over.
+        using var claimed = await PostForm(client, host, "Claim", new() { ["id"] = existingId });
+        Assert.Equal(HttpStatusCode.OK, claimed.StatusCode);
+        using var executed = await PostFormWithToken(
+            client,
+            host,
+            "ExecuteBoardBatch",
+            new() { ["intentId"] = intentId },
+            preview);
+        Assert.Equal(HttpStatusCode.NoContent, executed.StatusCode);
+        Assert.Equal("wrighty:refresh", Assert.Single(executed.Headers.GetValues("HX-Trigger")));
+
+        // A repeated confirmation returns the retained result and does not reapply the batch.
+        using var duplicate = await PostFormWithToken(
+            client,
+            host,
+            "ExecuteBoardBatch",
+            new() { ["intentId"] = intentId },
+            preview);
+        Assert.Equal(HttpStatusCode.NoContent, duplicate.StatusCode);
+
+        using var resultRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Board&q=Web");
+        var result = await (await client.SendAsync(resultRequest)).Content.ReadAsStringAsync();
+        Assert.Contains("Queue all warning", result);
+        Assert.Contains("role=\"alert\"", result);
+        Assert.Contains("<strong>1 item could not be processed.</strong>", result);
+        Assert.Contains("1 completed successfully; 1 skipped", result);
+        Assert.DoesNotContain("@if", result);
+        Assert.Contains("No longer eligible for this action.", result);
+        Assert.Contains("Worker queue", await ItemHtml(client, host, newId));
+        Assert.Contains("Todo", await ItemHtml(client, host, existingId));
+        Assert.Contains("Todo", await ItemHtml(client, host, lateId));
+
+        using var dismissed = await PostFormWithToken(
+            client,
+            host,
+            "DismissBoardBatch",
+            new() { ["intentId"] = intentId },
+            result);
+        Assert.Equal(HttpStatusCode.NoContent, dismissed.StatusCode);
+        using var afterDismissRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Board&q=Web");
+        var afterDismiss = await (await client.SendAsync(afterDismissRequest)).Content.ReadAsStringAsync();
+        Assert.DoesNotContain("Queue all warning", afterDismiss);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Board_bulk_action_supports_one_candidate_and_labels_the_hundred_item_limit()
+    {
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        using var singleRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Board&q=Web%20claim%20item");
+        var single = await (await client.SendAsync(singleRequest)).Content.ReadAsStringAsync();
+        var singleForm = BatchFormMarkup(single, "board-bulk-queue-column-0");
+        Assert.Contains("Queue all (1)", singleForm);
+        Assert.Contains("Frozen preview (1 of 1 eligible; 1 shown)", singleForm);
+
+        using var noneRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Board&q=Copilot%20claim");
+        var none = await (await client.SendAsync(noneRequest)).Content.ReadAsStringAsync();
+        Assert.DoesNotContain("data-board-bulk-action=\"queue\"", none);
+
+        var (config, backend, _) = await StoredBackend();
+        foreach (var index in Enumerable.Range(1, 101))
+        {
+            await backend.CreateAsync(
+                config,
+                new CreateWorkItemOperation(
+                    new CreateWorkItemRequest(
+                        $"Bulk limit {index:D3}",
+                        "Body",
+                        "Todo",
+                        "P2"),
+                    false),
+                CancellationToken.None);
+        }
+
+        using var limitedRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Board&q=Bulk%20limit");
+        var limited = await (await client.SendAsync(limitedRequest)).Content.ReadAsStringAsync();
+        var form = BatchFormMarkup(limited, "board-bulk-queue-column-0");
+        Assert.Contains("Process first 100 of 101", form);
+        Assert.Contains("Frozen preview (100 of 101 eligible; 101 shown)", form);
+        Assert.Contains("and 80 more", form);
+        Assert.Contains("Run the action again for the remainder", form);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Board_bulk_actions_can_repeat_queue_and_send_back_in_both_directions()
+    {
+        var host = await StartServer(openBrowser: false, pickFrom: "Worker queue");
+        using var client = new HttpClient();
+        var firstId = await StoredItemId("Web claim item");
+        var secondId = await StoredItemId("Provider blocked ready item");
+
+        using var queuePreviewRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var queuePreview = await (await client.SendAsync(queuePreviewRequest)).Content.ReadAsStringAsync();
+        var queueForm = BatchFormMarkup(queuePreview, "board-bulk-queue-column-0");
+        using var queued = await PostFormWithToken(
+            client,
+            host,
+            "ExecuteBoardBatch",
+            new() { ["intentId"] = HiddenValue(queueForm, "intentId") },
+            queueForm);
+        Assert.Equal(HttpStatusCode.NoContent, queued.StatusCode);
+
+        using var sendBackPreviewRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var sendBackPreview = await (await client.SendAsync(sendBackPreviewRequest)).Content.ReadAsStringAsync();
+        var sendBackForm = BatchFormMarkup(
+            sendBackPreview,
+            "board-bulk-dequeue-column-1");
+        Assert.Contains("Send back all", sendBackForm);
+        Assert.Contains("from Worker queue to Todo", sendBackForm);
+        using var sentBack = await PostFormWithToken(
+            client,
+            host,
+            "ExecuteBoardBatch",
+            new() { ["intentId"] = HiddenValue(sendBackForm, "intentId") },
+            sendBackForm);
+        Assert.Equal(HttpStatusCode.NoContent, sentBack.StatusCode);
+
+        Assert.Contains("Todo", await ItemHtml(client, host, firstId));
+        Assert.Contains("Todo", await ItemHtml(client, host, secondId));
+        using var resultRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var result = await (await client.SendAsync(resultRequest)).Content.ReadAsStringAsync();
+        Assert.DoesNotContain("Send back all warning", result);
+        Assert.DoesNotContain("class=\"board-batch-result warning\"", result);
+
+        // A retained result adds another intentId field to the Board. Repeating from that Board
+        // must still submit the new column action's own intent rather than the prior result's ID.
+        var queueAgainForm = BatchFormMarkup(result, "board-bulk-queue-column-0");
+        using var queuedAgain = await PostFormWithToken(
+            client,
+            host,
+            "ExecuteBoardBatch",
+            new() { ["intentId"] = HiddenValue(queueAgainForm, "intentId") },
+            queueAgainForm);
+        Assert.Equal(HttpStatusCode.NoContent, queuedAgain.StatusCode);
+        Assert.Contains("Worker queue", await ItemHtml(client, host, firstId));
+        Assert.Contains("Worker queue", await ItemHtml(client, host, secondId));
+
+        using var secondSendBackPreviewRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Board");
+        var secondSendBackPreview = await (
+            await client.SendAsync(secondSendBackPreviewRequest)).Content.ReadAsStringAsync();
+        var secondSendBackForm = BatchFormMarkup(
+            secondSendBackPreview,
+            "board-bulk-dequeue-column-1");
+        using var sentBackAgain = await PostFormWithToken(
+            client,
+            host,
+            "ExecuteBoardBatch",
+            new() { ["intentId"] = HiddenValue(secondSendBackForm, "intentId") },
+            secondSendBackForm);
+        Assert.Equal(HttpStatusCode.NoContent, sentBackAgain.StatusCode);
+        Assert.Contains("Todo", await ItemHtml(client, host, firstId));
+        Assert.Contains("Todo", await ItemHtml(client, host, secondId));
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Board_bulk_resume_queues_complete_local_sessions_without_launching_agents()
+    {
+        var host = await StartServer(openBrowser: false, releaseSeededClaim: true);
+        using var client = new HttpClient();
+        var secondId = await CreatePausedSessionAsync("Second paused session", "second-session");
+
+        using var previewRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var preview = await (await client.SendAsync(previewRequest)).Content.ReadAsStringAsync();
+        var resumeForm = BatchFormMarkup(preview, "board-bulk-resume-column-2");
+        Assert.Contains("Resume all (2)", resumeForm);
+        Assert.Contains("Wrighty will not add clarification", resumeForm);
+        Assert.Contains("provider subscription capacity", resumeForm);
+
+        using var resumed = await PostFormWithToken(
+            client,
+            host,
+            "ExecuteBoardBatch",
+            new() { ["intentId"] = HiddenValue(resumeForm, "intentId") },
+            resumeForm);
+        Assert.Equal(HttpStatusCode.NoContent, resumed.StatusCode);
+        Assert.Equal(DispatchStates.Queued, (await StoredState()).Item.DispatchState);
+        var (config, backend, second) = await StoredBackend(secondId);
+        var secondState = await backend.GetOperationalAsync(config, second, CancellationToken.None);
+        Assert.Equal(DispatchStates.Queued, secondState?.Item.DispatchState);
+
+        using var resultRequest = AuthenticatedGet(host, $"{host.Origin}/?handler=Board");
+        var result = await (await client.SendAsync(resultRequest)).Content.ReadAsStringAsync();
+        Assert.DoesNotContain("Resume all warning", result);
+        Assert.DoesNotContain("class=\"board-batch-result warning\"", result);
+        await host.Stop();
+    }
+
+    [Fact]
     public async Task Dropping_a_card_on_the_queue_column_moves_and_authorizes_it()
     {
         // Drag is the general gesture the buttons specialise: the same bundled move, so the
@@ -2267,6 +2513,15 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var next = board.IndexOf("<div class=\"card-wrap\"", start, StringComparison.Ordinal);
         var from = wrapStart >= 0 ? wrapStart : start;
         return next > from ? board[from..next] : board[from..];
+    }
+
+    private static string BatchFormMarkup(string board, string id)
+    {
+        var start = board.IndexOf($"<form id=\"{id}\"", StringComparison.Ordinal);
+        Assert.True(start >= 0, $"the board must contain the batch form '{id}'");
+        var end = board.IndexOf("</form>", start, StringComparison.Ordinal);
+        Assert.True(end > start, $"the batch form '{id}' must be complete");
+        return board[start..(end + "</form>".Length)];
     }
 
     /// <summary>One Operations row, isolating its actions from the other operational items.</summary>
@@ -3180,6 +3435,71 @@ public sealed partial class WrightyWebServerTests : IDisposable
             new ListWorkItemsRequest(null, null, ArchiveScope.All),
             CancellationToken.None);
         return Assert.Single(items, item => item.Title == title).Id.Value;
+    }
+
+    private async Task<string> CreatePausedSessionAsync(string title, string sessionId)
+    {
+        var (config, backend, _) = await StoredBackend();
+        var created = await backend.CreateAsync(
+            config,
+            new CreateWorkItemOperation(
+                new CreateWorkItemRequest(
+                    title,
+                    "Body",
+                    "In Progress",
+                    "P2",
+                    AutomaticExecutionAllowed: true,
+                    AgentPolicy: "codex"),
+                false),
+            CancellationToken.None);
+        var context = new AgentExecutionContext(
+            "codex",
+            sessionId,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: $"agent:{sessionId}");
+        var claim = await backend.TryClaimAsync(
+            config,
+            created.Id,
+            context,
+            CancellationToken.None);
+        var handle = new ClaimHandle(context, claim.ClaimToken);
+        await backend.RenewClaimAsync(
+            config,
+            created.Id,
+            handle,
+            directory,
+            sessionId,
+            CancellationToken.None);
+        await backend.UpdateAsync(
+            config,
+            created.Id,
+            new UpdateWorkItemOperation(
+                new WorkItemPatch(
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string>.Unspecified,
+                    OptionalValue<string?>.Unspecified,
+                    DispatchState: OptionalValue<string?>.From(DispatchStates.NeedsAttention)),
+                false,
+                ClaimHandle: handle),
+            CancellationToken.None);
+        await backend.RecordRunOutcomeAsync(
+            config,
+            created.Id,
+            RunOutcome.Succeeded,
+            "Paused for a decision.",
+            DateTimeOffset.UtcNow,
+            null,
+            CancellationToken.None);
+        await backend.ReleaseAsync(
+            config,
+            created.Id,
+            handle,
+            false,
+            DispatchStateOnRelease.Preserve,
+            CancellationToken.None);
+        return created.Id.Value;
     }
 
     private async Task<(TrackerConfig Config, LocalMarkdownTrackerBackend Backend, WorkItemId Id)>
@@ -5570,6 +5890,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("highlightElement", applicationScript);
         Assert.Contains("htmx:afterSwap", applicationScript);
         Assert.Contains("confirmationUi.handleKeydown(event)", applicationScript);
+        Assert.Contains("confirmationUi.wouldReplaceTrigger(swapTarget)", applicationScript);
         Assert.Contains("dataset.confirmMessage", confirmationScript);
         Assert.Contains("dialog.showModal()", confirmationScript);
         Assert.Contains(
@@ -5577,6 +5898,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             confirmationScript);
         Assert.Contains("cancel.focus()", confirmationScript);
         Assert.Contains("dialog.close(\"cancel\")", confirmationScript);
+        Assert.Contains("wouldReplaceTrigger", confirmationScript);
         Assert.DoesNotContain("confirm(", applicationScript);
         Assert.DoesNotContain("confirm(", confirmationScript);
         Assert.Contains("navigator.clipboard?.writeText", applicationScript);
@@ -6735,6 +7057,17 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Add(WrightyWebServer.TokenHeader, host.Token);
         return request;
+    }
+
+    private static async Task<string> ItemHtml(
+        HttpClient client,
+        RunningServer host,
+        string id)
+    {
+        using var request = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Item&id={Uri.EscapeDataString(id)}");
+        return await (await client.SendAsync(request)).Content.ReadAsStringAsync();
     }
 
     private static async Task<HttpResponseMessage> PostForm(

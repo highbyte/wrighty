@@ -30,7 +30,11 @@ public sealed class IndexModel(
     private const int MaximumBodyLength = 1_000_000;
     private const string ArgumentInvalid = "ARGUMENT_INVALID";
     private const string ContextApprovalPartial = "Shared/_ContextApproval";
+    private const string QueueActionId = "queue";
+    private const string DequeueActionId = "dequeue";
+    private const string ResumeActionId = "resume";
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
+    private readonly BoardBatchStore boardBatches = state.BoardBatches;
     private readonly IWorkspaceInventory workspaceInventory = agentSessions.WorkspaceInventory;
     private readonly IReadOnlyDictionary<string, IAgentAdapter> adaptersByName =
         agentSessions.AdaptersByName;
@@ -1180,11 +1184,13 @@ public sealed class IndexModel(
         {
             var snapshot = await tracker.GetDashboardAsync(state.Config, archiveScope, cancellationToken);
             var capacityViews = await ProviderCircuitsAsync(cancellationToken);
+            var batchResult = boardBatches.LatestResult;
             var responseRevision = ResponseRevision(
                 snapshot.Revision,
                 archiveScope,
                 capacityViews,
-                query.RevisionKey);
+                query.RevisionKey,
+                batchResult?.IntentId);
             var etag = $"\"{responseRevision}\"";
             if (Request.Headers.IfNoneMatch.Any(value => string.Equals(value, etag, StringComparison.Ordinal)))
             {
@@ -1201,7 +1207,8 @@ public sealed class IndexModel(
                     archiveScope,
                     responseRevision,
                     capacityViews,
-                    query));
+                    query,
+                    batchResult));
         }
         catch (TrackerException exception)
         {
@@ -2867,33 +2874,7 @@ public sealed class IndexModel(
     {
         try
         {
-            var resolved = tracker.ResolveId(state.Config, id);
-            var claim = await tracker.ClaimAsync(
-                state.Config, resolved, state.ClaimantContext, cancellationToken);
-            var handle = new ClaimHandle(
-                state.ClaimantContext with { ClaimantId = claim.ClaimantId },
-                claim.ClaimToken);
-            try
-            {
-                await tracker.UpdateAsync(
-                    state.Config,
-                    resolved,
-                    WorkItemPatch.StatusOnly(state.Config.DefaultPickFrom),
-                    expectedRevision: null,
-                    handle,
-                    cancellationToken);
-            }
-            catch (TrackerException)
-            {
-                // The claim was only scaffolding for this one move; do not leave the item claimed
-                // behind a failed update. A failing release must not mask the update error.
-                await ReleaseScaffoldingClaimAsync(resolved, handle, cancellationToken);
-                throw;
-            }
-
-            await tracker.ReleaseAsync(
-                state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
-                cancellationToken);
+            await QueueItemAsync(id, cancellationToken);
             // A fire-and-forget action stays on the board: no content is swapped in, the refresh
             // moves the card into the queue column, and that move is the feedback. Failures still
             // open the item panel below, because that is when the operator needs the detail.
@@ -2904,6 +2885,37 @@ public sealed class IndexModel(
         {
             return await ItemError(id, exception, cancellationToken);
         }
+    }
+
+    private async Task QueueItemAsync(string id, CancellationToken cancellationToken)
+    {
+        var resolved = tracker.ResolveId(state.Config, id);
+        var claim = await tracker.ClaimAsync(
+            state.Config, resolved, state.ClaimantContext, cancellationToken);
+        var handle = new ClaimHandle(
+            state.ClaimantContext with { ClaimantId = claim.ClaimantId },
+            claim.ClaimToken);
+        try
+        {
+            await tracker.UpdateAsync(
+                state.Config,
+                resolved,
+                WorkItemPatch.StatusOnly(state.Config.DefaultPickFrom),
+                expectedRevision: null,
+                handle,
+                cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // The claim was only scaffolding for this one move; do not leave the item claimed
+            // behind a failed update. A failing release must not mask the update error.
+            await ReleaseScaffoldingClaimAsync(resolved, handle, cancellationToken);
+            throw;
+        }
+
+        await tracker.ReleaseAsync(
+            state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
+            cancellationToken);
     }
 
     // Both sides are nullable: a work item's status may be absent, and so may the status it is
@@ -2972,7 +2984,7 @@ public sealed class IndexModel(
             return
             [
                 new CardActionView(
-                    "queue",
+                    QueueActionId,
                     "QueueItem",
                     "Queue",
                     "Move to the worker queue so an agent can pick it up",
@@ -2999,7 +3011,7 @@ public sealed class IndexModel(
             return
             [
                 new CardActionView(
-                    "dequeue",
+                    DequeueActionId,
                     "DequeueItem",
                     "Send back",
                     backlog is null
@@ -3071,7 +3083,7 @@ public sealed class IndexModel(
                     : null,
                 ConfirmAction: requiresConfirmedTakeover ? "Open for clarification" : null));
             actions.Add(new CardActionView(
-                "resume",
+                ResumeActionId,
                 "ResumeSession",
                 "Resume",
                 "Queue the recorded session so a continuous worker resumes it",
@@ -3473,41 +3485,7 @@ public sealed class IndexModel(
     {
         try
         {
-            var resolved = tracker.ResolveId(state.Config, id);
-            var snapshot = await tracker.GetDashboardAsync(
-                state.Config, ArchiveScope.Active, cancellationToken);
-            var backlog = BacklogStatus(snapshot.Statuses)
-                ?? throw new TrackerException(
-                    "STATUS_UNAVAILABLE",
-                    "No backlog status is configured to send this item back to.",
-                    2);
-            var claim = await tracker.ClaimAsync(
-                state.Config, resolved, state.ClaimantContext, cancellationToken);
-            var handle = new ClaimHandle(
-                state.ClaimantContext with { ClaimantId = claim.ClaimantId },
-                claim.ClaimToken);
-            try
-            {
-                await tracker.UpdateAsync(
-                    state.Config,
-                    resolved,
-                    WorkItemPatch.StatusOnly(backlog),
-                    expectedRevision: null,
-                    handle,
-                    cancellationToken);
-            }
-            catch (TrackerException)
-            {
-                // Same discipline as the queue button: the claim was scaffolding for one move, so
-                // a failed move must not leave the item claimed, and a failing release must not
-                // mask the move's error.
-                await ReleaseScaffoldingClaimAsync(resolved, handle, cancellationToken);
-                throw;
-            }
-
-            await tracker.ReleaseAsync(
-                state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
-                cancellationToken);
+            await DequeueItemAsync(id, cancellationToken);
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
             return new NoContentResult();
         }
@@ -3515,6 +3493,45 @@ public sealed class IndexModel(
         {
             return await ItemError(id, exception, cancellationToken);
         }
+    }
+
+    private async Task DequeueItemAsync(string id, CancellationToken cancellationToken)
+    {
+        var resolved = tracker.ResolveId(state.Config, id);
+        var snapshot = await tracker.GetDashboardAsync(
+            state.Config, ArchiveScope.Active, cancellationToken);
+        var backlog = BacklogStatus(snapshot.Statuses)
+            ?? throw new TrackerException(
+                "STATUS_UNAVAILABLE",
+                "No backlog status is configured to send this item back to.",
+                2);
+        var claim = await tracker.ClaimAsync(
+            state.Config, resolved, state.ClaimantContext, cancellationToken);
+        var handle = new ClaimHandle(
+            state.ClaimantContext with { ClaimantId = claim.ClaimantId },
+            claim.ClaimToken);
+        try
+        {
+            await tracker.UpdateAsync(
+                state.Config,
+                resolved,
+                WorkItemPatch.StatusOnly(backlog),
+                expectedRevision: null,
+                handle,
+                cancellationToken);
+        }
+        catch (TrackerException)
+        {
+            // Same discipline as the queue button: the claim was scaffolding for one move, so
+            // a failed move must not leave the item claimed, and a failing release must not
+            // mask the move's error.
+            await ReleaseScaffoldingClaimAsync(resolved, handle, cancellationToken);
+            throw;
+        }
+
+        await tracker.ReleaseAsync(
+            state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
+            cancellationToken);
     }
 
     /// <summary>
@@ -3530,9 +3547,7 @@ public sealed class IndexModel(
     {
         try
         {
-            var resolved = tracker.ResolveId(state.Config, id);
-            await tracker.QueuePausedAsync(state.Config, resolved, cancellationToken);
-            state.Forget(resolved.Value);
+            await ResumeSessionAsync(id, cancellationToken);
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
             return new NoContentResult();
         }
@@ -3541,6 +3556,174 @@ public sealed class IndexModel(
             return await ItemError(id, exception, cancellationToken);
         }
     }
+
+    private async Task ResumeSessionAsync(string id, CancellationToken cancellationToken)
+    {
+        var resolved = tracker.ResolveId(state.Config, id);
+        await tracker.QueuePausedAsync(state.Config, resolved, cancellationToken);
+        state.Forget(resolved.Value);
+    }
+
+    public async Task<IActionResult> OnPostExecuteBoardBatchAsync(
+        string? intentId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            // Once the protected request has been accepted, finish its bounded sequence even if
+            // the browser disconnects. The process still owns the lifetime: a process shutdown
+            // may stop the sequence, and the result never claims otherwise after restart.
+            _ = cancellationToken;
+            await boardBatches.ExecuteAsync(
+                intentId,
+                state.ConfigurationRevision,
+                ExecuteBoardBatchAsync);
+            Response.Headers["HX-Trigger"] = "wrighty:refresh";
+            return new NoContentResult();
+        }
+        catch (TrackerException exception)
+        {
+            WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+            Response.StatusCode = Status(exception);
+            return Partial(
+                "Shared/_BoardBatchError",
+                new WebErrorModel(exception.Code, SafeMessage(exception)));
+        }
+    }
+
+    public IActionResult OnPostDismissBoardBatch(string? intentId)
+    {
+        boardBatches.Dismiss(intentId);
+        Response.Headers["HX-Trigger"] = "wrighty:refresh";
+        return new NoContentResult();
+    }
+
+    private async Task<BoardBatchResult> ExecuteBoardBatchAsync(BoardBatchIntent intent)
+    {
+        List<BoardBatchItemResult> results = [];
+        string? abortReason = null;
+        foreach (var candidate in intent.Candidates)
+        {
+            try
+            {
+                if (!string.Equals(
+                        intent.ConfigurationRevision,
+                        state.ActiveConfigurationRevision ?? string.Empty,
+                        StringComparison.Ordinal))
+                {
+                    throw new TrackerException(
+                        "BOARD_BATCH_CONFIG_CHANGED",
+                        "Wrighty's configuration changed while the batch was running.",
+                        6);
+                }
+                if (!await BoardBatchCandidateStillEligibleAsync(
+                        candidate.Id,
+                        intent.Action,
+                        CancellationToken.None))
+                {
+                    results.Add(new BoardBatchItemResult(
+                        candidate.Id,
+                        candidate.DisplayId,
+                        Succeeded: false,
+                        Skipped: true,
+                        "No longer eligible for this action."));
+                    continue;
+                }
+
+                await ExecuteBoardBatchItemAsync(
+                    candidate.Id,
+                    intent.Action,
+                    CancellationToken.None);
+                results.Add(new BoardBatchItemResult(
+                    candidate.Id,
+                    candidate.DisplayId,
+                    Succeeded: true,
+                    Skipped: false));
+            }
+            catch (TrackerException exception) when (IsBoardBatchItemConflict(exception))
+            {
+                results.Add(new BoardBatchItemResult(
+                    candidate.Id,
+                    candidate.DisplayId,
+                    Succeeded: false,
+                    Skipped: true,
+                    "The item changed before Wrighty could apply the action."));
+            }
+            catch (TrackerException exception)
+            {
+                WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
+                results.Add(new BoardBatchItemResult(
+                    candidate.Id,
+                    candidate.DisplayId,
+                    Succeeded: false,
+                    Skipped: false,
+                    $"Wrighty could not complete this item ({exception.Code})."));
+                abortReason = $"The batch stopped because Wrighty could not continue safely ({exception.Code}).";
+                break;
+            }
+        }
+
+        if (abortReason is not null)
+        {
+            var completedIds = results.Select(result => result.Id).ToHashSet(StringComparer.Ordinal);
+            results.AddRange(intent.Candidates
+                .Where(candidate => !completedIds.Contains(candidate.Id))
+                .Select(candidate => new BoardBatchItemResult(
+                    candidate.Id,
+                    candidate.DisplayId,
+                    Succeeded: false,
+                    Skipped: false,
+                    "Not processed because the batch stopped.",
+                    Aborted: true)));
+        }
+
+        return new BoardBatchResult(
+            intent.Id,
+            intent.Action,
+            DateTimeOffset.UtcNow,
+            results,
+            abortReason);
+    }
+
+    private async Task<bool> BoardBatchCandidateStillEligibleAsync(
+        string id,
+        BoardBatchAction action,
+        CancellationToken cancellationToken)
+    {
+        var snapshot = await tracker.GetDashboardAsync(
+            state.Config,
+            ArchiveScope.Active,
+            cancellationToken);
+        var item = snapshot.Items.FirstOrDefault(value =>
+            string.Equals(value.Item.Id.Value, id, StringComparison.Ordinal));
+        if (item is null)
+            return false;
+        var activity = OperationalStatuses.Resolve(
+            item.Item,
+            item.Claim,
+            state.Config.DefaultPickFrom,
+            item.Session,
+            state.Config.DefaultFinishTo);
+        var actionId = BoardBatchActionId(action);
+        return CardActions(item, activity, snapshot.Statuses).Any(value =>
+            value.IsAvailable && string.Equals(value.Id, actionId, StringComparison.Ordinal));
+    }
+
+    private Task ExecuteBoardBatchItemAsync(
+        string id,
+        BoardBatchAction action,
+        CancellationToken cancellationToken) => action switch
+        {
+            BoardBatchAction.Queue => QueueItemAsync(id, cancellationToken),
+            BoardBatchAction.Dequeue => DequeueItemAsync(id, cancellationToken),
+            _ => ResumeSessionAsync(id, cancellationToken)
+        };
+
+    private static bool IsBoardBatchItemConflict(TrackerException exception) =>
+        exception.Code is "WORK_ITEM_NOT_FOUND" or "WORK_ITEM_ARCHIVED" or
+            "CLAIM_NOT_OWNER" or "WORKER_ITEM_INELIGIBLE" or
+            "RESUME_ADDRESS_NOT_LOCAL" ||
+        Status(exception) == StatusCodes.Status409Conflict;
 
     /// <summary>
     /// Moves a retained session's dispatch state to needs-attention. The item stays where it is
@@ -4696,7 +4879,8 @@ public sealed class IndexModel(
         ArchiveScope scope,
         string responseRevision,
         IReadOnlyList<ProviderCapacityView> providerCapacity,
-        BoardListQuery query)
+        BoardListQuery query,
+        BoardBatchResult? batchResult = null)
     {
         var circuitsByAgent = providerCapacity.ToDictionary(
             value => value.Agent,
@@ -4770,6 +4954,15 @@ public sealed class IndexModel(
                 unassignedIndex,
                 query.SortForColumn(unassignedIndex)));
         }
+        if (scope != ArchiveScope.Archived)
+        {
+            columns = columns
+                .Select(column => column with
+                {
+                    BulkAction = BoardBulkAction(column, query, snapshot.Statuses)
+                })
+                .ToList();
+        }
         return new BoardPageModel(
             snapshot.Statuses,
             snapshot.Priorities,
@@ -4782,7 +4975,189 @@ public sealed class IndexModel(
             scope.ToString().ToLowerInvariant(),
             responseRevision,
             ProviderCapacity: providerCapacity,
-            Query: query);
+            Query: query,
+            BatchResult: batchResult);
+    }
+
+    private BoardBulkActionView? BoardBulkAction(
+        BoardColumnModel column,
+        BoardListQuery query,
+        IReadOnlyList<string> statuses)
+    {
+        if (!statuses.Contains(column.Name, StringComparer.OrdinalIgnoreCase))
+            return null;
+        var action = BoardBatchActionFor(column);
+        if (action is null)
+            return null;
+
+        var actionId = BoardBatchActionId(action.Value);
+        var eligible = column.Cards
+            .Where(card => HasAvailableAction(card, actionId))
+            .Select(card => new BoardBatchCandidate(card.Id, card.DisplayId, card.Title))
+            .OrderBy(card => card.Id, StringComparer.Ordinal)
+            .ToArray();
+        if (eligible.Length == 0)
+            return null;
+
+        var intent = boardBatches.Create(
+            action.Value,
+            state.ConfigurationRevision,
+            eligible,
+            eligible.Length,
+            column.Cards.Count);
+        var processed = intent.Candidates.Count;
+        var limited = eligible.Length > BoardBatchStore.MaximumCandidates;
+        var label = BoardBatchLabel(action.Value, processed, eligible.Length, limited);
+        var verb = BoardBatchVerb(action.Value);
+        var description = eligible.Length == column.Cards.Count
+            ? $"All {eligible.Length} shown items can be {verb}."
+            : $"{eligible.Length} of {column.Cards.Count} shown items can be {verb}.";
+        return new BoardBulkActionView(
+            actionId,
+            intent.Id,
+            label,
+            description,
+            BoardBatchTitle(action.Value),
+            BoardBatchPreview(intent, column, query, statuses),
+            BoardBatchConfirmAction(action.Value, processed, limited),
+            eligible.Length,
+            column.Cards.Count);
+    }
+
+    private BoardBatchAction? BoardBatchActionFor(BoardColumnModel column)
+    {
+        if (IsWorkflowStatus(column.Name, state.Config.DefaultPickTo))
+            return BoardBatchAction.Resume;
+        if (IsWorkflowStatus(column.Name, state.Config.DefaultPickFrom))
+            return BoardBatchAction.Dequeue;
+        return column.Cards.Any(card => HasAvailableAction(card, QueueActionId))
+            ? BoardBatchAction.Queue
+            : null;
+    }
+
+    private static string BoardBatchActionId(BoardBatchAction action) => action switch
+    {
+        BoardBatchAction.Queue => QueueActionId,
+        BoardBatchAction.Dequeue => DequeueActionId,
+        _ => ResumeActionId
+    };
+
+    private static string BoardBatchLabel(
+        BoardBatchAction action,
+        int processed,
+        int eligible,
+        bool limited) => limited
+        ? $"Process first {processed} of {eligible}"
+        : action switch
+        {
+            BoardBatchAction.Queue => $"Queue all ({eligible})",
+            BoardBatchAction.Dequeue => $"Send back all ({eligible})",
+            _ => $"Resume all ({eligible})"
+        };
+
+    private static string BoardBatchVerb(BoardBatchAction action) => action switch
+    {
+        BoardBatchAction.Queue => "queued",
+        BoardBatchAction.Dequeue => "sent back",
+        _ => "resumed"
+    };
+
+    private static string BoardBatchTitle(BoardBatchAction action) => action switch
+    {
+        BoardBatchAction.Queue => "Queue these items?",
+        BoardBatchAction.Dequeue => "Send these items back?",
+        _ => "Queue these sessions to resume?"
+    };
+
+    private static string BoardBatchConfirmAction(
+        BoardBatchAction action,
+        int processed,
+        bool limited) => limited
+        ? $"Process {processed}"
+        : action switch
+        {
+            BoardBatchAction.Queue => $"Queue {processed}",
+            BoardBatchAction.Dequeue => $"Send back {processed}",
+            _ => $"Queue {processed} sessions"
+        };
+
+    private static bool HasAvailableAction(BoardCardModel card, string actionId) =>
+        card.EffectiveActions.Any(action =>
+            action.IsAvailable && string.Equals(action.Id, actionId, StringComparison.Ordinal));
+
+    private string BoardBatchPreview(
+        BoardBatchIntent intent,
+        BoardColumnModel column,
+        BoardListQuery query,
+        IReadOnlyList<string> statuses)
+    {
+        var backlog = BacklogStatus(statuses) ?? "the configured backlog";
+        var consequence = intent.Action switch
+        {
+            BoardBatchAction.Queue =>
+                $"Move {intent.Candidates.Count} items from {column.Name} to " +
+                $"{state.Config.DefaultPickFrom}. This authorizes unattended agent execution " +
+                "under the configured worker and context policy. A running worker may start " +
+                "immediately and use provider subscription capacity.",
+            BoardBatchAction.Dequeue =>
+                $"Move {intent.Candidates.Count} untouched items from {state.Config.DefaultPickFrom} " +
+                $"to {backlog} and revoke the queue's automatic-execution authorization. " +
+                "Claimed items and queued session resumes will not be changed.",
+            _ =>
+                $"Queue {intent.Candidates.Count} recorded agent sessions for workers to resume. " +
+                "Wrighty will not add clarification to any session. A running worker may start " +
+                "immediately and use provider subscription capacity. Interrupted sessions may " +
+                "continue from partial workspace changes."
+        };
+        var listed = intent.Candidates.Take(20)
+            .Select(candidate => $"{candidate.DisplayId} — {candidate.Title}");
+        var remaining = intent.Candidates.Count > 20
+            ? $"\n…and {intent.Candidates.Count - 20} more."
+            : string.Empty;
+        var limited = intent.EligibleCount > intent.Candidates.Count
+            ? $"\nThis preview is limited to the first {intent.Candidates.Count} of " +
+              $"{intent.EligibleCount} eligible items. Run the action again for the remainder."
+            : string.Empty;
+        var ineligible = column.Cards
+            .Where(card => !HasAvailableAction(card, BoardBatchActionId(intent.Action)))
+            .GroupBy(card => BoardBatchIneligibilityReason(card, intent.Action))
+            .OrderBy(group => group.Key, StringComparer.Ordinal)
+            .Select(group => $"{group.Count()} {group.Key}")
+            .ToArray();
+        var exclusions = ineligible.Length == 0
+            ? string.Empty
+            : $"\nIneligible shown items: {string.Join("; ", ineligible)}.";
+        var filters = ActiveBoardFilters(query);
+        return $"{consequence}\n\nScope: active Board items in {column.Name}.\n" +
+               $"Frozen preview ({intent.Candidates.Count} of " +
+               $"{intent.EligibleCount} eligible; {intent.ShownCount} shown):\n" +
+               string.Join('\n', listed) + remaining + limited + exclusions + filters +
+               "\n\nItems are checked again before each change. Conflicts are skipped; completed changes are not rolled back.";
+    }
+
+    private static string BoardBatchIneligibilityReason(
+        BoardCardModel card,
+        BoardBatchAction action)
+    {
+        if (card.ClaimState != ClaimOwnershipState.Unclaimed)
+            return "claimed";
+        if (card.DispatchState is not null)
+            return "with a pending decision";
+        return action == BoardBatchAction.Resume
+            ? "without a complete local session"
+            : "that changed state";
+    }
+
+    private static string ActiveBoardFilters(BoardListQuery query)
+    {
+        List<string> filters = [];
+        if (query.Search is { } search) filters.Add($"search ‘{search}’");
+        if (query.ClaimKinds.Count > 0) filters.Add($"claimant {string.Join(", ", query.ClaimKinds)}");
+        if (query.Agents.Count > 0) filters.Add($"agent {string.Join(", ", query.Agents)}");
+        if (query.Priorities.Count > 0) filters.Add($"priority {string.Join(", ", query.Priorities)}");
+        if (query.ClaimStates.Count > 0) filters.Add($"claim state {string.Join(", ", query.ClaimStates)}");
+        if (query.UpdatedWithin is { } updated) filters.Add($"updated {updated}");
+        return filters.Count == 0 ? string.Empty : $"\nActive filters: {string.Join("; ", filters)}.";
     }
 
     private static BoardCardModel TimestampCard(BoardCardModel card, ItemSort sort) =>
@@ -4830,7 +5205,8 @@ public sealed class IndexModel(
         string snapshotRevision,
         ArchiveScope scope,
         IReadOnlyList<ProviderCapacityView> providerCapacity,
-        string queryRevision)
+        string queryRevision,
+        string? batchResultId)
     {
         var providers = string.Join(
             '\n',
@@ -4839,7 +5215,7 @@ public sealed class IndexModel(
                 .Select(value =>
                     $"{value.Agent}|{value.State}|{value.Reason}|{value.Until:O}|" +
                     $"{value.Confidence}|{value.ConsecutiveFailures}|{value.Simulated}"));
-        var value = $"{snapshotRevision}\n{scope}\n{providers}\n{queryRevision}";
+        var value = $"{snapshotRevision}\n{scope}\n{providers}\n{queryRevision}\n{batchResultId}";
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
     }
 
@@ -4987,7 +5363,9 @@ public sealed class IndexModel(
             "UPDATE_CONFLICT" or "WEB_CLAIM_GENERATION_STALE" or
             "WORKER_ITEM_NOT_PAUSED" or "RESUME_SESSION_CHANGED" or
             "SESSION_LAUNCH_NOT_ALLOWED" or "RESUME_ADDRESS_UNAVAILABLE" or
-            "RESUME_WORKTREE_ABSENT" or "STATUS_MOVE_NOT_ALLOWED" => 409,
+            "RESUME_WORKTREE_ABSENT" or "STATUS_MOVE_NOT_ALLOWED" or
+            "BOARD_BATCH_EXPIRED" or "BOARD_BATCH_UNKNOWN" or
+            "BOARD_BATCH_CONFIG_CHANGED" => 409,
         "LOCAL_STORE_INVALID" or "CONFIG_INVALID" or
             "TERMINAL_LAUNCH_UNSUPPORTED" or "DESKTOP_SESSION_UNSUPPORTED" or
             "DESKTOP_APP_UNAVAILABLE" => 422,

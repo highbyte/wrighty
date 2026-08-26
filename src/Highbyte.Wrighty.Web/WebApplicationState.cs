@@ -40,6 +40,8 @@ public sealed class WebApplicationState(
             ? "GITHUB PROJECT"
             : "LOCAL MARKDOWN";
     public string? ActiveConfigurationRevision => ActiveConfiguration.Revision;
+    public string? ConfigurationRevision =>
+        requestConfiguration.Value?.Revision ?? ActiveConfiguration.Revision;
     public string? Token { get; } = token;
     public bool TokenAuthenticationRequired { get; } = tokenAuthenticationRequired;
     public string WorkspacePath { get; } = ResolveWorkspacePath(config, workingDirectory);
@@ -47,6 +49,7 @@ public sealed class WebApplicationState(
         DisplayWorkspacePath(ResolveWorkspacePath(config, workingDirectory));
     public string LocalHostName { get; } = SafeHostName(localHostName);
     public string ClaimantId { get; } = $"web:{Guid.NewGuid():N}";
+    public BoardBatchStore BoardBatches { get; } = new();
     public AgentExecutionContext ClaimantContext => new(null, null, AgentContextSource.ExplicitOption,
         ClaimantKind: ClaimantKind.Human, ClaimantId: ClaimantId);
 

@@ -70,6 +70,7 @@ let workerSummaryRevision = null;
 let lastOpenedItem = null;
 let authenticationReadyDispatched = false;
 let boardControlFocus = null;
+let boardSearchTimer = null;
 let operationsControlFocus = null;
 let settingsScrollAnchor = null;
 let hostedLogViews = [];
@@ -133,6 +134,7 @@ installContextStateUpdates(document);
 
 function applyClientFilter() {
   const query = boardSearch.value.trim().toLocaleLowerCase();
+  const board = document.querySelector("#board-content");
   const cards = [...document.querySelectorAll("#board-content .card")];
   let visible = 0;
 
@@ -148,7 +150,12 @@ function applyClientFilter() {
     if (countElement) updateVisibleCount(countElement, group, query, count);
   });
 
-  const structured = document.querySelector("#board-content")?.dataset.structuredFilterCount;
+  const batchSearch = (board?.dataset.batchSearch || "").trim().toLocaleLowerCase();
+  board?.querySelectorAll?.("[data-board-bulk-action]").forEach(action => {
+    action.hidden = batchSearch !== query;
+  });
+
+  const structured = board?.dataset.structuredFilterCount;
   const itemLabel = `${visible} work item${visible === 1 ? "" : "s"}`;
   if (query.length === 0) {
     filterStatus.textContent = structured === undefined ? "" : `${itemLabel} match the active filters.`;
@@ -391,6 +398,8 @@ document.addEventListener("htmx:beforeRequest", event => {
   }
   const card = event.target.closest?.(".card");
   if (card) lastOpenedItem = card.dataset.itemId;
+  if (event.target.closest?.("[data-board-bulk-action]"))
+    boardControlFocus = captureBoardControlFocus(document);
   const scrollAnchor = captureSettingsScrollAnchor(
     event.detail.elt || event.target,
     event.detail.target
@@ -402,6 +411,14 @@ document.addEventListener("htmx:beforeRequest", event => {
 document.addEventListener("htmx:beforeSwap", event => {
   if (contextPanel.beforeSwap(event)) return;
   const swapTarget = event.detail.target;
+  // A confirmation resumes HTMX's captured request. Replacing the region that contains its
+  // originating control leaves that continuation attached to a disconnected element, and HTMX
+  // then abandons the confirmed request without issuing it. Keep the frozen preview and its
+  // control alive until the operator confirms or cancels; the next normal poll catches up.
+  if (confirmationUi.wouldReplaceTrigger(swapTarget)) {
+    event.detail.shouldSwap = false;
+    return;
+  }
   if (swapTarget?.classList?.contains("hosted-worker-log") ||
       swapTarget?.id === "operations-content") {
     hostedLogViews = captureHostedLogViews(swapTarget);
@@ -423,8 +440,13 @@ function restoreBoardAfterSwap(target) {
     boardRevision = newRevision;
     applyClientFilter();
     localizeRelativeTimes(board);
-    restoreBoardControlFocus(document, boardControlFocus);
-    boardControlFocus = null;
+    // A batch POST targets the result region before its refresh replaces the whole Board. Keep
+    // the captured column action through that nested response; restoring it there would focus a
+    // button that the immediately following Board swap removes.
+    if (target.id === "board-content") {
+      restoreBoardControlFocus(document, boardControlFocus);
+      boardControlFocus = null;
+    }
   }
 }
 
@@ -551,7 +573,14 @@ document.addEventListener("input", event => {
   if (event.target.closest(".edit-form, .create-form")) {
     event.target.closest(".edit-form, .create-form").dataset.dirty = "true";
   }
-  if (event.target === boardSearch) applyClientFilter();
+  if (event.target === boardSearch) {
+    applyClientFilter();
+    clearTimeout(boardSearchTimer);
+    boardSearchTimer = setTimeout(() => {
+      boardRevision = null;
+      boardFilters.requestSubmit();
+    }, 250);
+  }
 });
 
 document.addEventListener("change", event => {
@@ -561,7 +590,7 @@ document.addEventListener("change", event => {
       `[data-sort-direction-for="${CSS.escape(event.target.id)}"]`);
     if (button) syncSortDirectionButton(event.target, button);
   }
-  if (event.target.matches("#board-filters select:not([name=scope]), #board-filters input[name], [data-board-column-sort-index]")) {
+  if (event.target.matches("#board-filters select:not([name=scope]), #board-filters input[name]:not([name=q]), [data-board-column-sort-index]")) {
     syncBoardFilterIndicator(boardFilters, boardFilterMenu);
     boardControlFocus = captureBoardControlFocus(document);
     boardRevision = null;
@@ -782,7 +811,9 @@ window.addEventListener("resize", () => refreshExpandableValues());
 function handleSearchKeydown(event) {
   if (event.target === boardSearch && event.key === "Enter") {
     event.preventDefault();
-    applyClientFilter();
+    clearTimeout(boardSearchTimer);
+    boardRevision = null;
+    boardFilters.requestSubmit();
     return true;
   }
   return false;
