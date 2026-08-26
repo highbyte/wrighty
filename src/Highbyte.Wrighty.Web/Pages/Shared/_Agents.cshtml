@@ -166,8 +166,10 @@
           <tr class="agent-table-row@(agent.NeedsAttention ? " needs-attention" : null)"
               data-agent-id="@agent.Agent">
             <th class="agent-name-cell" scope="row">
-              <strong>@agent.AgentLabel</strong>
-              <small>@agent.Agent</small>
+              <span class="agent-name-content">
+                <strong>@agent.AgentLabel</strong>
+                <small>@agent.Agent</small>
+              </span>
             </th>
             <td>
               <form hx-post="/?handler=SetAgentEnabled"
@@ -196,59 +198,63 @@
               </span>
             </td>
             <td class="agent-capacity-cell">
-              <span title="@agent.Capacity?.Reason"
-                    class="agent-state @CapacityStateClass(agent)">@capacityLabel</span>
-              @if (agent.Capacity?.Simulated == true)
-              {
-                <small class="agent-capacity-source">Simulated</small>
-              }
-              @if (agent.Detected && agent.Capacity is not null)
-              {
-                <form hx-post="/?handler=ProbeProvider"
-                      hx-target="#agents-region"
-                      hx-swap="outerHTML"
-                      hx-sync="this:drop"
-                      hx-request='{"timeout":130000}'
-                      hx-disabled-elt="find button"
-                      data-agent-probe-request
-                      data-confirm-title="Probe @agent.AgentLabel capacity?"
-                      data-confirm-message="A real probe starts a small vendor request and may consume subscription usage. A configured repository simulation does not start the vendor CLI. Neither path claims a work item."
-                      data-confirm-action="Probe @agent.AgentLabel">
-                  @Html.AntiForgeryToken()
-                  <input type="hidden" name="agent" value="@agent.Agent">
-                  <input type="hidden" name="surface" value="agents">
-                  <button type="submit"
-                          id="agent-probe-@agent.Agent"
-                          class="button-link-compact"
-                          disabled="@(!agent.Enabled || agent.ProbeInProgress)">Probe</button>
-                </form>
-              }
+              <div class="agent-capacity-content">
+                <span title="@agent.Capacity?.Reason"
+                      class="agent-state @CapacityStateClass(agent)">@capacityLabel</span>
+                @if (agent.Capacity?.Simulated == true)
+                {
+                  <small class="agent-capacity-source">Simulated</small>
+                }
+                @if (agent.Detected && agent.Capacity is not null)
+                {
+                  <form hx-post="/?handler=ProbeProvider"
+                        hx-target="#agents-region"
+                        hx-swap="outerHTML"
+                        hx-sync="this:drop"
+                        hx-request='{"timeout":130000}'
+                        hx-disabled-elt="find button"
+                        data-agent-probe-request
+                        data-confirm-title="Probe @agent.AgentLabel capacity?"
+                        data-confirm-message="A real probe starts a small vendor request and may consume subscription usage. A configured repository simulation does not start the vendor CLI. Neither path claims a work item."
+                        data-confirm-action="Probe @agent.AgentLabel">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="agent" value="@agent.Agent">
+                    <input type="hidden" name="surface" value="agents">
+                    <button type="submit"
+                            id="agent-probe-@agent.Agent"
+                            class="button-link-compact"
+                            disabled="@(!agent.Enabled || agent.ProbeInProgress)">Probe</button>
+                  </form>
+                }
+              </div>
             </td>
             <td>
               <span class="agent-state @SkillStateClass(skillLabel)">@skillLabel</span>
             </td>
             <td class="agent-action-cell">
-              @if (agent.Skill is not null)
-              {
-                @if (canUpdateSkill)
+              <div class="agent-action-content">
+                @if (agent.Skill is not null)
                 {
-                  <form hx-post="/?handler=UpdateAgentSkill" hx-target="#agents-region" hx-swap="outerHTML" hx-disabled-elt="find button">
-                    @Html.AntiForgeryToken()
-                    <input type="hidden" name="agentSelection" value="@agent.Skill.AgentSelection">
-                    <button type="submit"
-                            id="agent-update-skill-@agent.Agent"
-                            class="button-compact button-warning"
-                            disabled="@(!agent.Enabled)">Update skill</button>
-                  </form>
+                  @if (canUpdateSkill)
+                  {
+                    <form hx-post="/?handler=UpdateAgentSkill" hx-target="#agents-region" hx-swap="outerHTML" hx-disabled-elt="find button">
+                      @Html.AntiForgeryToken()
+                      <input type="hidden" name="agentSelection" value="@agent.Skill.AgentSelection">
+                      <button type="submit"
+                              id="agent-update-skill-@agent.Agent"
+                              class="button-compact button-warning"
+                              disabled="@(!agent.Enabled)">Update skill</button>
+                    </form>
+                  }
+                  <button type="button"
+                          id="agent-manage-skill-@agent.Agent"
+                          class="button-compact"
+                          data-agent-details-toggle="@detailsId"
+                          aria-expanded="false"
+                          aria-controls="@detailsId"
+                          disabled="@(!agent.Enabled)">Manage skill</button>
                 }
-                <button type="button"
-                        id="agent-manage-skill-@agent.Agent"
-                        class="button-compact"
-                        data-agent-details-toggle="@detailsId"
-                        aria-expanded="false"
-                        aria-controls="@detailsId"
-                        disabled="@(!agent.Enabled)">Manage skill</button>
-              }
+              </div>
             </td>
           </tr>
           @if (agent.Skill is { } skill)
