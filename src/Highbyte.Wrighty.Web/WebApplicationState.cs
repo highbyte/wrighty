@@ -49,6 +49,7 @@ public sealed class WebApplicationState(
         DisplayWorkspacePath(ResolveWorkspacePath(config, workingDirectory));
     public string LocalHostName { get; } = SafeHostName(localHostName);
     public string ClaimantId { get; } = $"web:{Guid.NewGuid():N}";
+    public BoardBatchStore BoardBatches { get; } = new();
     public AgentExecutionContext ClaimantContext => new(null, null, AgentContextSource.ExplicitOption,
         ClaimantKind: ClaimantKind.Human, ClaimantId: ClaimantId);
 

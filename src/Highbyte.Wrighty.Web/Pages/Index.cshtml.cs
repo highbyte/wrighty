@@ -25,13 +25,16 @@ public sealed class IndexModel(
     IProviderCapacityStore providerCapacity,
     IProviderCapacityProbeService providerCapacityProbe,
     WebAgentSessionServices agentSessions,
-    WebOperationsServices operationsServices,
-    BoardBatchStore boardBatches) : PageModel
+    WebOperationsServices operationsServices) : PageModel
 {
     private const int MaximumBodyLength = 1_000_000;
     private const string ArgumentInvalid = "ARGUMENT_INVALID";
     private const string ContextApprovalPartial = "Shared/_ContextApproval";
+    private const string QueueActionId = "queue";
+    private const string DequeueActionId = "dequeue";
+    private const string ResumeActionId = "resume";
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
+    private readonly BoardBatchStore boardBatches = state.BoardBatches;
     private readonly IWorkspaceInventory workspaceInventory = agentSessions.WorkspaceInventory;
     private readonly IReadOnlyDictionary<string, IAgentAdapter> adaptersByName =
         agentSessions.AdaptersByName;
@@ -2981,7 +2984,7 @@ public sealed class IndexModel(
             return
             [
                 new CardActionView(
-                    "queue",
+                    QueueActionId,
                     "QueueItem",
                     "Queue",
                     "Move to the worker queue so an agent can pick it up",
@@ -3008,7 +3011,7 @@ public sealed class IndexModel(
             return
             [
                 new CardActionView(
-                    "dequeue",
+                    DequeueActionId,
                     "DequeueItem",
                     "Send back",
                     backlog is null
@@ -3080,7 +3083,7 @@ public sealed class IndexModel(
                     : null,
                 ConfirmAction: requiresConfirmedTakeover ? "Open for clarification" : null));
             actions.Add(new CardActionView(
-                "resume",
+                ResumeActionId,
                 "ResumeSession",
                 "Resume",
                 "Queue the recorded session so a continuous worker resumes it",
@@ -3701,12 +3704,7 @@ public sealed class IndexModel(
             state.Config.DefaultPickFrom,
             item.Session,
             state.Config.DefaultFinishTo);
-        var actionId = action switch
-        {
-            BoardBatchAction.Queue => "queue",
-            BoardBatchAction.Dequeue => "dequeue",
-            _ => "resume"
-        };
+        var actionId = BoardBatchActionId(action);
         return CardActions(item, activity, snapshot.Statuses).Any(value =>
             value.IsAvailable && string.Equals(value.Id, actionId, StringComparison.Ordinal));
     }
@@ -4988,22 +4986,11 @@ public sealed class IndexModel(
     {
         if (!statuses.Contains(column.Name, StringComparer.OrdinalIgnoreCase))
             return null;
-        var action = IsWorkflowStatus(column.Name, state.Config.DefaultPickTo)
-            ? BoardBatchAction.Resume
-            : IsWorkflowStatus(column.Name, state.Config.DefaultPickFrom)
-                ? BoardBatchAction.Dequeue
-                : column.Cards.Any(card => HasAvailableAction(card, "queue"))
-                    ? BoardBatchAction.Queue
-                    : (BoardBatchAction?)null;
+        var action = BoardBatchActionFor(column);
         if (action is null)
             return null;
 
-        var actionId = action.Value switch
-        {
-            BoardBatchAction.Queue => "queue",
-            BoardBatchAction.Dequeue => "dequeue",
-            _ => "resume"
-        };
+        var actionId = BoardBatchActionId(action.Value);
         var eligible = column.Cards
             .Where(card => HasAvailableAction(card, actionId))
             .Select(card => new BoardBatchCandidate(card.Id, card.DisplayId, card.Title))
@@ -5019,47 +5006,80 @@ public sealed class IndexModel(
             eligible.Length,
             column.Cards.Count);
         var processed = intent.Candidates.Count;
-        var label = eligible.Length > BoardBatchStore.MaximumCandidates
-            ? $"Process first {processed} of {eligible.Length}"
-            : action.Value switch
-            {
-                BoardBatchAction.Queue => $"Queue all ({eligible.Length})",
-                BoardBatchAction.Dequeue => $"Send back all ({eligible.Length})",
-                _ => $"Resume all ({eligible.Length})"
-            };
-        var verb = action.Value switch
-        {
-            BoardBatchAction.Queue => "queued",
-            BoardBatchAction.Dequeue => "sent back",
-            _ => "resumed"
-        };
+        var limited = eligible.Length > BoardBatchStore.MaximumCandidates;
+        var label = BoardBatchLabel(action.Value, processed, eligible.Length, limited);
+        var verb = BoardBatchVerb(action.Value);
         var description = eligible.Length == column.Cards.Count
             ? $"All {eligible.Length} shown items can be {verb}."
             : $"{eligible.Length} of {column.Cards.Count} shown items can be {verb}.";
-        var title = action.Value switch
-        {
-            BoardBatchAction.Queue => "Queue these items?",
-            BoardBatchAction.Dequeue => "Send these items back?",
-            _ => "Queue these sessions to resume?"
-        };
         return new BoardBulkActionView(
             actionId,
             intent.Id,
             label,
             description,
-            title,
+            BoardBatchTitle(action.Value),
             BoardBatchPreview(intent, column, query, statuses),
-            eligible.Length > BoardBatchStore.MaximumCandidates
-                ? $"Process {processed}"
-                : action.Value switch
-                {
-                    BoardBatchAction.Queue => $"Queue {processed}",
-                    BoardBatchAction.Dequeue => $"Send back {processed}",
-                    _ => $"Queue {processed} sessions"
-                },
+            BoardBatchConfirmAction(action.Value, processed, limited),
             eligible.Length,
             column.Cards.Count);
     }
+
+    private BoardBatchAction? BoardBatchActionFor(BoardColumnModel column)
+    {
+        if (IsWorkflowStatus(column.Name, state.Config.DefaultPickTo))
+            return BoardBatchAction.Resume;
+        if (IsWorkflowStatus(column.Name, state.Config.DefaultPickFrom))
+            return BoardBatchAction.Dequeue;
+        return column.Cards.Any(card => HasAvailableAction(card, QueueActionId))
+            ? BoardBatchAction.Queue
+            : null;
+    }
+
+    private static string BoardBatchActionId(BoardBatchAction action) => action switch
+    {
+        BoardBatchAction.Queue => QueueActionId,
+        BoardBatchAction.Dequeue => DequeueActionId,
+        _ => ResumeActionId
+    };
+
+    private static string BoardBatchLabel(
+        BoardBatchAction action,
+        int processed,
+        int eligible,
+        bool limited) => limited
+        ? $"Process first {processed} of {eligible}"
+        : action switch
+        {
+            BoardBatchAction.Queue => $"Queue all ({eligible})",
+            BoardBatchAction.Dequeue => $"Send back all ({eligible})",
+            _ => $"Resume all ({eligible})"
+        };
+
+    private static string BoardBatchVerb(BoardBatchAction action) => action switch
+    {
+        BoardBatchAction.Queue => "queued",
+        BoardBatchAction.Dequeue => "sent back",
+        _ => "resumed"
+    };
+
+    private static string BoardBatchTitle(BoardBatchAction action) => action switch
+    {
+        BoardBatchAction.Queue => "Queue these items?",
+        BoardBatchAction.Dequeue => "Send these items back?",
+        _ => "Queue these sessions to resume?"
+    };
+
+    private static string BoardBatchConfirmAction(
+        BoardBatchAction action,
+        int processed,
+        bool limited) => limited
+        ? $"Process {processed}"
+        : action switch
+        {
+            BoardBatchAction.Queue => $"Queue {processed}",
+            BoardBatchAction.Dequeue => $"Send back {processed}",
+            _ => $"Queue {processed} sessions"
+        };
 
     private static bool HasAvailableAction(BoardCardModel card, string actionId) =>
         card.EffectiveActions.Any(action =>
@@ -5099,12 +5119,7 @@ public sealed class IndexModel(
               $"{intent.EligibleCount} eligible items. Run the action again for the remainder."
             : string.Empty;
         var ineligible = column.Cards
-            .Where(card => !HasAvailableAction(card, intent.Action switch
-            {
-                BoardBatchAction.Queue => "queue",
-                BoardBatchAction.Dequeue => "dequeue",
-                _ => "resume"
-            }))
+            .Where(card => !HasAvailableAction(card, BoardBatchActionId(intent.Action)))
             .GroupBy(card => BoardBatchIneligibilityReason(card, intent.Action))
             .OrderBy(group => group.Key, StringComparer.Ordinal)
             .Select(group => $"{group.Count()} {group.Key}")

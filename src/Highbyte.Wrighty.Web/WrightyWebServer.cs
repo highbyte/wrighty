@@ -165,7 +165,6 @@ public sealed class WrightyWebServer(
             }
         });
         builder.Services.AddSingleton(state);
-        builder.Services.AddSingleton<BoardBatchStore>();
         builder.Services.AddSingleton(hostedWorker);
         builder.Services.AddSingleton(tracker);
         builder.Services.AddSingleton(dependencies.WorkspaceInventory);
