@@ -272,6 +272,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("Agents on this computer", html);
         Assert.Contains("hx-sync=\"#agents-region:replace\"", html);
         Assert.Contains("<table class=\"agent-table\">", html);
+        Assert.Contains("class=\"agent-name-content\"", html);
+        Assert.Contains("class=\"agent-capacity-content\"", html);
+        Assert.Contains("class=\"agent-action-content\"", html);
         Assert.Contains("data-agent-details-toggle=\"agent-details-codex\"", html);
         Assert.Contains("aria-label=\"Disable Copilot\"", html);
         Assert.Contains("name=\"enabled\" value=\"false\"", html);
@@ -5744,6 +5747,15 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(".connection-tools { display: grid; justify-items: end;", stylesheet);
         Assert.Contains(".access-link-button { min-height: 0; padding: 0; border: 0;", stylesheet);
         Assert.Contains(".agents-menu.has-current > summary", stylesheet);
+        Assert.Contains(
+            ".agent-table-row > th, .agent-table-row > td { height: 3rem; padding: .35rem .6rem; background: color-mix(in srgb, var(--surface) 76%, transparent); vertical-align: middle; }",
+            stylesheet);
+        Assert.Contains(".agent-name-content { display: grid; min-width: 0; }", stylesheet);
+        Assert.Contains(
+            ".agent-capacity-content, .agent-action-content { display: flex; align-items: center; gap: .35rem; }",
+            stylesheet);
+        Assert.DoesNotContain(".agent-name-cell { display:", stylesheet);
+        Assert.DoesNotContain(".agent-capacity-cell { display:", stylesheet);
         Assert.Contains(".board-filter-menu { position: relative; align-self: end; width: 7.25rem; }", stylesheet);
         Assert.Contains(".board-filter-menu > summary { display: flex; align-items: center; justify-content: space-between;", stylesheet);
         Assert.Contains(".board-filter-heading-actions { display: flex; align-items: center; gap: .25rem; }", stylesheet);
