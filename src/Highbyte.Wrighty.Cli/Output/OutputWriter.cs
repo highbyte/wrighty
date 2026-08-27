@@ -148,7 +148,8 @@ public sealed class OutputWriter(
         var completed = Group(items, OperationalStatuses.Completed);
         var paused = Group(items, OperationalStatuses.PausedSession);
         var active = items.Where(value => value.OperationalStatus
-            is OperationalStatuses.AgentActive
+            is OperationalStatuses.WorkerPreparing
+            or OperationalStatuses.AgentActive
             or OperationalStatuses.HumanEditing
             or OperationalStatuses.AutomationActive).ToArray();
         var queued = Group(items, OperationalStatuses.Queued);
@@ -1730,6 +1731,8 @@ public sealed class OutputWriter(
     private string OperationalStatusToken(WorkItemOperationalState value) => value.OperationalStatus switch
     {
         OperationalStatuses.NeedsAttention => "!attention",
+        OperationalStatuses.WorkerPreparing =>
+            $"preparing:{value.Claim.Agent ?? "agent"}",
         OperationalStatuses.AgentActive when IsWorkerRunClaim(value) =>
             $"processing:{value.Claim.Agent ?? "agent"}",
         OperationalStatuses.AgentActive => $"claimed:{value.Claim.Agent ?? "agent"}",
@@ -1750,6 +1753,7 @@ public sealed class OutputWriter(
     private string OperationalStatusLabel(WorkItemOperationalState value) => value.OperationalStatus switch
     {
         OperationalStatuses.NeedsAttention => "Needs attention",
+        OperationalStatuses.WorkerPreparing => "Worker preparing",
         OperationalStatuses.AgentActive when IsWorkerRunClaim(value) =>
             $"{AgentLabel(value.Claim.Agent) ?? "Agent"} processing",
         OperationalStatuses.AgentActive => $"{AgentLabel(value.Claim.Agent) ?? "Agent"} claimed",
@@ -1892,6 +1896,7 @@ public sealed class OutputWriter(
                 claimantId = claimView?.ClaimantId,
                 sessionId = claimView?.SessionId,
                 workspacePath = claimView?.WorkspacePath,
+                executionPhase = claimView?.ExecutionPhase,
                 workerRun = IsWorkerRunClaim(value),
                 leaseRemainingSeconds = LeaseRemainingSeconds(value.Claim),
                 value.Claim.TakeoverAvailable

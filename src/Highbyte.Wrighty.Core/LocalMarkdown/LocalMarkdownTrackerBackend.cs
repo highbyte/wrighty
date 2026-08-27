@@ -1360,7 +1360,10 @@ public sealed partial class LocalMarkdownTrackerBackend(
             agentContext.SessionId,
             now,
             now.AddMinutes(config.LeaseMinutes),
-            ClaimantKinds.ToStorageValue(agentContext.EffectiveClaimantKind));
+            ClaimantKinds.ToStorageValue(agentContext.EffectiveClaimantKind),
+            ExecutionPhase: agentContext.EffectiveClaimantKind == ClaimantKind.Agent
+                ? ClaimExecutionPhases.Normalize(agentContext.ExecutionPhase)
+                : null);
         state.Claims[document.Id] = claim;
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
         return ClaimResult(claim, ClaimOutcome.Acquired, true);
@@ -1403,7 +1406,12 @@ public sealed partial class LocalMarkdownTrackerBackend(
             claimantContext.Agent ?? current.Agent,
             claimantContext.SessionId ?? current.SessionId, now, now.AddMinutes(config.LeaseMinutes),
             ClaimantKinds.ToStorageValue(claimantContext.EffectiveClaimantKind),
-            current.WorkspacePath);
+            current.WorkspacePath,
+            current.Branch,
+            claimantContext.EffectiveClaimantKind == ClaimantKind.Agent
+                ? ClaimExecutionPhases.Normalize(claimantContext.ExecutionPhase) ??
+                  current.ExecutionPhase
+                : null);
         state.Claims[document.Id] = replacement;
         await LocalRuntimeStateStore.SaveUnlockedAsync(paths.Root, state, cancellationToken);
         return ClaimResult(replacement, ClaimOutcome.TakenOver, true);
@@ -1445,7 +1453,11 @@ public sealed partial class LocalMarkdownTrackerBackend(
             SessionId = sessionId ?? current.SessionId,
             ClaimantKind = ClaimantKinds.ToStorageValue(claimHandle.Claimant.EffectiveClaimantKind),
             WorkspacePath = workspacePath ?? current.WorkspacePath,
-            Branch = branch ?? current.Branch
+            Branch = branch ?? current.Branch,
+            ExecutionPhase = claimHandle.Claimant.EffectiveClaimantKind == ClaimantKind.Agent
+                ? ClaimExecutionPhases.Normalize(claimHandle.Claimant.ExecutionPhase) ??
+                  current.ExecutionPhase
+                : null
         };
         state.Claims[document.Id] = renewed;
         state.PreserveSession(document.Id, renewed, now);
@@ -1481,7 +1493,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
             current.SessionId,
             current.ClaimantKind,
             string.Equals(current.InstallationId, worker, StringComparison.Ordinal),
-            current.WorkspacePath);
+            current.WorkspacePath,
+            current.ExecutionPhase);
     }
 
     public async Task<AgentSessionRecord?> GetAgentSessionAsync(
@@ -2145,7 +2158,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
             ? claim.ClaimToken
             : null,
         takeoverAvailable,
-        claim.WorkspacePath);
+        claim.WorkspacePath,
+        claim.ExecutionPhase);
 
     private static string ResolveClaimantId(AgentExecutionContext context, bool generateForAgent)
     {
@@ -2252,7 +2266,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 claim.ClaimantKind,
                 claim.ClaimantId,
                 string.Equals(claim.InstallationId, worker, StringComparison.Ordinal),
-                claim.WorkspacePath);
+                claim.WorkspacePath,
+                claim.ExecutionPhase);
         }
 
         if (claim is not null)
@@ -2266,7 +2281,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
                 claim.ClaimantKind,
                 claim.ClaimantId,
                 false,
-                claim.WorkspacePath);
+                claim.WorkspacePath,
+                claim.ExecutionPhase);
         }
 
         if (state.Runtime(documentId) is { } record)

@@ -73,6 +73,33 @@ public sealed class OperationalStatusesTests
     }
 
     [Fact]
+    public void Agent_claim_is_preparing_until_the_process_has_started()
+    {
+        Assert.Equal(OperationalStatuses.WorkerPreparing, Resolve(
+            new WorkItemClaimSummary(
+                ClaimOwnershipState.OwnedByCurrent,
+                Agent: "codex",
+                ClaimantKind: "agent",
+                ExecutionPhase: ClaimExecutionPhases.Preparing)));
+        Assert.Equal(OperationalStatuses.AgentActive, Resolve(
+            new WorkItemClaimSummary(
+                ClaimOwnershipState.OwnedByCurrent,
+                Agent: "codex",
+                ClaimantKind: "agent",
+                ExecutionPhase: ClaimExecutionPhases.Invoking)));
+    }
+
+    [Fact]
+    public void Agent_claim_without_a_phase_remains_active_for_backward_compatibility()
+    {
+        Assert.Equal(OperationalStatuses.AgentActive, Resolve(
+            new WorkItemClaimSummary(
+                ClaimOwnershipState.HeldByOther,
+                Agent: "claude",
+                ClaimantKind: "agent")));
+    }
+
+    [Fact]
     public void Paused_session_resolves_from_a_complete_session_record()
     {
         Assert.Equal(OperationalStatuses.PausedSession, Resolve(Unclaimed, CompleteSession));

@@ -37,6 +37,26 @@ public sealed class ClaimMarkerTests
     }
 
     [Fact]
+    public void Execution_phase_is_normalized_when_a_marker_is_read()
+    {
+        var body = ClaimMarker.Format(Event("acquired", "token-2", null) with
+        {
+            ExecutionPhase = " INVOKING "
+        });
+
+        Assert.True(ClaimMarker.TryParse(body, out var parsed));
+        Assert.Equal(ClaimExecutionPhases.Invoking, parsed.ExecutionPhase);
+
+        var humanBody = ClaimMarker.Format(Event("acquired", "token-3", null) with
+        {
+            ClaimantKind = "human",
+            ExecutionPhase = ClaimExecutionPhases.Preparing
+        });
+        Assert.True(ClaimMarker.TryParse(humanBody, out var human));
+        Assert.Null(human.ExecutionPhase);
+    }
+
+    [Fact]
     public void Legacy_markers_are_detected_but_not_parsed_as_v3()
     {
         foreach (var version in new[] { 1, 2 })

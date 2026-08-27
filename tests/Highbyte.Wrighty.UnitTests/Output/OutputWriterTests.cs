@@ -1033,6 +1033,36 @@ public sealed class OutputWriterTests
     }
 
     [Fact]
+    public async Task Json_operational_detail_includes_the_claim_execution_phase()
+    {
+        var output = new StringWriter();
+        var item = new WorkItemDetail(
+            ItemId, "Preparing", "Body\n", null, "In Progress", null,
+            AutomaticExecutionAllowed: true,
+            AgentPolicy: "codex");
+        var claim = new WorkItemClaimSummary(
+            ClaimOwnershipState.OwnedByCurrent,
+            "worker-1",
+            DateTimeOffset.Parse("2026-07-19T12:30:00Z"),
+            "codex",
+            ClaimantKind: "agent",
+            ExecutionPhase: ClaimExecutionPhases.Preparing);
+
+        await new OutputWriter(output, new StringWriter())
+            .WriteOperationalDetailAsync(
+                new WorkItemOperationalState(
+                    item, claim, null, OperationalStatuses.WorkerPreparing),
+                json: true,
+                _ => "#42");
+
+        using var document = JsonDocument.Parse(output.ToString());
+        Assert.Equal(
+            ClaimExecutionPhases.Preparing,
+            document.RootElement.GetProperty("result").GetProperty("claim")
+                .GetProperty("executionPhase").GetString());
+    }
+
+    [Fact]
     public async Task Operational_lists_cover_every_activity_and_lease_shape()
     {
         var now = DateTimeOffset.Parse("2026-07-19T12:00:00Z");
@@ -1042,6 +1072,8 @@ public sealed class OutputWriterTests
         {
             State(OperationalStatuses.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
                 now.AddMinutes(-1), "agent:worker:attention", session),
+            State(OperationalStatuses.WorkerPreparing, ClaimOwnershipState.OwnedByCurrent,
+                now.AddMinutes(25), "agent:worker:preparing", session),
             State(OperationalStatuses.AgentActive, ClaimOwnershipState.OwnedByCurrent,
                 now.AddMinutes(30), "agent:worker:active", session),
             State(OperationalStatuses.AgentActive, ClaimOwnershipState.HeldByOther,
@@ -1072,6 +1104,7 @@ public sealed class OutputWriterTests
 
         var compactText = compact.ToString();
         Assert.Contains("!attention lease:expired", compactText);
+        Assert.Contains("preparing:claude lease:25m", compactText);
         Assert.Contains("processing:claude lease:30m", compactText);
         Assert.Contains("claimed:claude lease:1h", compactText);
         Assert.Contains("queued:claude", compactText);
@@ -1083,6 +1116,7 @@ public sealed class OutputWriterTests
 
         var tableText = table.ToString();
         Assert.Contains("Needs attention", tableText);
+        Assert.Contains("Worker preparing", tableText);
         Assert.Contains("Claude processing", tableText);
         Assert.Contains("Claude claimed", tableText);
         Assert.Contains("Resume queued", tableText);

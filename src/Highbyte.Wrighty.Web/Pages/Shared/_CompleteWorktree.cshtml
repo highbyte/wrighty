@@ -5,7 +5,8 @@
    surfacing a destructive cleanup there could discard work the operator intends to continue. *@
 @{
     var sessionStillOwnedOrResuming = Model.OperationalStatus
-        is OperationalStatuses.AgentActive
+        is OperationalStatuses.WorkerPreparing
+        or OperationalStatuses.AgentActive
         or OperationalStatuses.HumanEditing
         or OperationalStatuses.AutomationActive
         or OperationalStatuses.NeedsAttention

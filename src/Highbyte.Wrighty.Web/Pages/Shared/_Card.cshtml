@@ -9,6 +9,7 @@
   var activityClass = Model.OperationalStatus switch
   {
     OperationalStatuses.NeedsAttention => "activity-needs-attention",
+    OperationalStatuses.WorkerPreparing => "activity-worker-preparing",
     OperationalStatuses.AgentActive => "activity-agent-active",
     OperationalStatuses.Queued => "activity-queued",
     OperationalStatuses.RetryScheduled => "activity-retry-scheduled",
@@ -28,6 +29,7 @@
       ? $"{Model.ProviderBlock.AgentLabel} unavailable"
       : $"{Model.ProviderBlock.AgentLabel} probe active";
   }
+  var agentWorking = Model.OperationalStatus == OperationalStatuses.AgentActive && !providerBlocked;
 }
 @* Razor omits an attribute whose value is null, which is how a non-draggable card loses its
    draggable attribute entirely rather than carrying an encoded one. *@
@@ -39,11 +41,18 @@
           hx-target="#item-panel" hx-swap="innerHTML">
     <span class="card-top"><span class="display-id">@Model.DisplayId</span>@if (Model.Priority is not null){<span class="priority">@Model.Priority</span>}</span>
     <span class="card-title">@Model.Title</span>
+    @if (agentWorking)
+    {
+      <span class="agent-working-banner">
+        <span class="agent-working-live">Live</span>
+        <span class="agent-working-label">@activityLabel</span>
+      </span>
+    }
     @* The claim label shares the badge's row, pushed right. The bottom of the card belongs to the
        action buttons, which are positioned over it; leaving the claim state down there put quiet,
        always-present text underneath controls that grow with the item's state. *@
     <span class="card-status-row">
-      @if (activityLabel is not null)
+      @if (activityLabel is not null && !agentWorking)
       {
         <span class="activity-badge">@activityLabel</span>
       }

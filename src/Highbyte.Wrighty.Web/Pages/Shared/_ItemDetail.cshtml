@@ -67,11 +67,18 @@
       }
     </aside>
   }
+  else if (Model.OperationalStatus == OperationalStatuses.WorkerPreparing)
+  {
+    <aside class="worker-state-callout worker-preparing" role="status">
+      <strong>Worker preparing</strong>
+      <span>The worker owns this item while it prepares the workspace and validates launch policy. No agent process has started yet.</span>
+    </aside>
+  }
   else if (Model.OperationalStatus == OperationalStatuses.AgentActive)
   {
     <aside class="worker-state-callout agent-active" role="status">
-      <strong>@(Model.AgentLabel ?? "Agent") active</strong>
-      <span>The agent claim is active. Claim state does not guarantee that the operating-system process is still alive.</span>
+      <strong>@(Model.AgentLabel ?? "Agent") working</strong>
+      <span>The worker successfully started the agent process and is maintaining its claim.</span>
     </aside>
   }
   else if (Model.OperationalStatus == OperationalStatuses.Completed)

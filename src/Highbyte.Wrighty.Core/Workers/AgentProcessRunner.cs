@@ -15,15 +15,39 @@ public interface IAgentProcessRunner
         Func<string, CancellationToken, Task>? sessionStarted,
         bool killOnCancellation,
         CancellationToken cancellationToken);
+
+    Task<AgentRunResult> RunAsync(
+        AgentInvocation invocation,
+        IAgentAdapter adapter,
+        TimeSpan timeout,
+        IReadOnlyDictionary<string, string> grantEnvironment,
+        Func<CancellationToken, Task>? processStarted,
+        Func<string, CancellationToken, Task>? sessionStarted,
+        bool killOnCancellation,
+        CancellationToken cancellationToken) =>
+        RunAsync(invocation, adapter, timeout, grantEnvironment, sessionStarted,
+            killOnCancellation, cancellationToken);
 }
 
 public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgentProcessRunner
 {
+    public Task<AgentRunResult> RunAsync(
+        AgentInvocation invocation,
+        IAgentAdapter adapter,
+        TimeSpan timeout,
+        IReadOnlyDictionary<string, string> grantEnvironment,
+        Func<string, CancellationToken, Task>? sessionStarted,
+        bool killOnCancellation,
+        CancellationToken cancellationToken) =>
+        RunAsync(invocation, adapter, timeout, grantEnvironment, processStarted: null,
+            sessionStarted, killOnCancellation, cancellationToken);
+
     public async Task<AgentRunResult> RunAsync(
         AgentInvocation invocation,
         IAgentAdapter adapter,
         TimeSpan timeout,
         IReadOnlyDictionary<string, string> grantEnvironment,
+        Func<CancellationToken, Task>? processStarted,
         Func<string, CancellationToken, Task>? sessionStarted,
         bool killOnCancellation,
         CancellationToken cancellationToken)
@@ -32,6 +56,19 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
             throw new TrackerException("ARGUMENT_INVALID", "--item-timeout must be positive.", 2);
 
         using var process = StartProcess(invocation, grantEnvironment);
+        if (processStarted is not null)
+        {
+            try
+            {
+                await processStarted(cancellationToken);
+            }
+            catch
+            {
+                Kill(process);
+                await process.WaitForExitAsync(CancellationToken.None);
+                throw;
+            }
+        }
 
         // The prompt goes here when there is one: an approved context on the command line would be
         // readable by every process on the machine, and would appear in the argument list worker

@@ -151,7 +151,7 @@
     <label>Operational
       <select name="operationalStatus">
         <option value="">Any</option>
-        @foreach (var value in new[] { OperationalStatuses.NeedsAttention, OperationalStatuses.AgentActive, OperationalStatuses.Queued, OperationalStatuses.RetryScheduled, OperationalStatuses.HandoffQueued, OperationalStatuses.Ready, OperationalStatuses.Completed })
+        @foreach (var value in new[] { OperationalStatuses.NeedsAttention, OperationalStatuses.AgentActive, OperationalStatuses.WorkerPreparing, OperationalStatuses.Queued, OperationalStatuses.RetryScheduled, OperationalStatuses.HandoffQueued, OperationalStatuses.Ready, OperationalStatuses.Completed })
         {
           <option value="@value" selected="@(query.OperationalStatus == value ? "selected" : null)">@(OperationalStatusDisplay.Label(value) ?? value)</option>
         }

@@ -211,6 +211,20 @@ public sealed record BoardListQuery(
     }
 }
 
+internal static class OperationalStatusOrder
+{
+    public static int Rank(string activity) => activity switch
+    {
+        OperationalStatuses.AgentActive => 0,
+        OperationalStatuses.WorkerPreparing => 1,
+        OperationalStatuses.NeedsAttention => 2,
+        OperationalStatuses.RetryScheduled => 3,
+        OperationalStatuses.HandoffQueued => 4,
+        OperationalStatuses.Queued => 5,
+        _ => 6
+    };
+}
+
 public sealed class BoardCardComparer(
     ItemSort sort,
     IReadOnlyList<string> priorities) : IComparer<BoardCardModel>
@@ -236,8 +250,8 @@ public sealed class BoardCardComparer(
 
     private int CompareDefault(BoardCardModel left, BoardCardModel right)
     {
-        var compared = OperationalRank(left.OperationalStatus).CompareTo(
-            OperationalRank(right.OperationalStatus));
+        var compared = OperationalStatusOrder.Rank(left.OperationalStatus).CompareTo(
+            OperationalStatusOrder.Rank(right.OperationalStatus));
         if (compared != 0) return compared;
         compared = Optional(Priority(left.Priority), Priority(right.Priority), descending: false);
         return compared != 0 ? compared : Number(left).CompareTo(Number(right));
@@ -283,15 +297,6 @@ public sealed class BoardCardComparer(
                 : int.MaxValue;
     }
 
-    private static int OperationalRank(string activity) => activity switch
-    {
-        OperationalStatuses.NeedsAttention => 0,
-        OperationalStatuses.AgentActive => 1,
-        OperationalStatuses.RetryScheduled => 2,
-        OperationalStatuses.HandoffQueued => 3,
-        OperationalStatuses.Queued => 4,
-        _ => 5
-    };
 }
 
 public sealed class OperationsListInput
@@ -477,8 +482,8 @@ public sealed class OperationsItemComparer(
 
     private int CompareDefault(OperationsItemView left, OperationsItemView right)
     {
-        var compared = OperationalRank(left.OperationalStatus).CompareTo(
-            OperationalRank(right.OperationalStatus));
+        var compared = OperationalStatusOrder.Rank(left.OperationalStatus).CompareTo(
+            OperationalStatusOrder.Rank(right.OperationalStatus));
         if (compared != 0) return compared;
         compared = Optional(Priority(left.Priority), Priority(right.Priority), descending: false);
         return compared != 0 ? compared : Number(left.Id).CompareTo(Number(right.Id));
@@ -521,13 +526,4 @@ public sealed class OperationsItemComparer(
                 : int.MaxValue;
     }
 
-    private static int OperationalRank(string activity) => activity switch
-    {
-        OperationalStatuses.NeedsAttention => 0,
-        OperationalStatuses.AgentActive => 1,
-        OperationalStatuses.RetryScheduled => 2,
-        OperationalStatuses.HandoffQueued => 3,
-        OperationalStatuses.Queued => 4,
-        _ => 5
-    };
 }

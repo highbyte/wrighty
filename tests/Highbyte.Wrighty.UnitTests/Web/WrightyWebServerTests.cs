@@ -140,8 +140,13 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("Attention required", html);
         Assert.Contains("activity-needs-attention", html);
         Assert.Contains("Needs attention", html);
+        Assert.Contains("activity-worker-preparing", html);
+        Assert.Contains("Worker preparing", html);
         Assert.Contains("activity-agent-active", html);
-        Assert.Contains("Claude active", html);
+        Assert.Contains("Copilot working", html);
+        Assert.Contains("class=\"agent-working-banner\"", html);
+        Assert.Contains("class=\"agent-working-live\">Live", html);
+        Assert.Contains("class=\"agent-working-label\">Copilot working", html);
         Assert.Contains("class=\"column-count has-tooltip\"", html);
         Assert.Contains("data-visible-count", html);
         Assert.Contains("data-total-count=", html);
@@ -5950,6 +5955,13 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(".request-button.htmx-request .request-button-progress { visibility: visible; }", stylesheet);
         Assert.Contains(".request-button:disabled { opacity: .72; cursor: wait; }", stylesheet);
         Assert.Contains("@keyframes request-button-spin", stylesheet);
+        Assert.Contains(".card.activity-worker-preparing", stylesheet);
+        Assert.Contains(".card.activity-agent-active", stylesheet);
+        Assert.Contains(".agent-working-banner", stylesheet);
+        Assert.Contains(".agent-working-live", stylesheet);
+        Assert.Contains("@media (prefers-reduced-motion: no-preference)", stylesheet);
+        Assert.Contains("@keyframes agent-working-pulse", stylesheet);
+        Assert.Contains("@keyframes agent-working-rail", stylesheet);
         Assert.Contains(
             ".worker-row.worker-stale { border: 1px solid var(--line); background: transparent; }",
             stylesheet);
@@ -6800,7 +6812,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 "claude",
                 "other-session",
                 AgentContextSource.ExplicitOption,
-                ClaimantKind: ClaimantKind.Agent),
+                ClaimantKind: ClaimantKind.Agent,
+                ExecutionPhase: ClaimExecutionPhases.Preparing),
             CancellationToken.None);
         await backend.CreateAsync(
             config,

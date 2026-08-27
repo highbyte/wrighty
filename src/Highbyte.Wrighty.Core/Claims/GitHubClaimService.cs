@@ -298,7 +298,11 @@ public sealed class GitHubClaimService(
         {
             Agent = claimantContext.Agent ?? current.Claim.Agent,
             SessionId = claimantContext.SessionId ?? current.Claim.SessionId,
-            WorkspacePath = current.Claim.WorkspacePath
+            WorkspacePath = current.Claim.WorkspacePath,
+            ExecutionPhase = claimantContext.EffectiveClaimantKind == ClaimantKind.Agent
+                ? ClaimExecutionPhases.Normalize(claimantContext.ExecutionPhase) ??
+                  current.Claim.ExecutionPhase
+                : null
         };
         await CreateAsync(config, issue, claim, cancellationToken);
         var winner = await ResolvedAsync(config, issue, id, cancellationToken);
@@ -349,7 +353,11 @@ public sealed class GitHubClaimService(
             Agent = claimHandle.Claimant.Agent ?? current.Claim.Agent,
             SessionId = sessionId ?? current.Claim.SessionId,
             ClaimantKind = ClaimantKinds.ToStorageValue(claimHandle.Claimant.EffectiveClaimantKind),
-            WorkspacePath = workspacePath ?? current.Claim.WorkspacePath
+            WorkspacePath = workspacePath ?? current.Claim.WorkspacePath,
+            ExecutionPhase = claimHandle.Claimant.EffectiveClaimantKind == ClaimantKind.Agent
+                ? ClaimExecutionPhases.Normalize(claimHandle.Claimant.ExecutionPhase) ??
+                  current.Claim.ExecutionPhase
+                : null
         };
         await CreateAsync(config, issue, renewed, cancellationToken);
         var winner = await ResolvedAsync(config, issue, id, cancellationToken);
@@ -528,7 +536,7 @@ public sealed class GitHubClaimService(
             local ? ClaimOwnershipState.OwnedByCurrent : ClaimOwnershipState.HeldByOther,
             claim.InstallationId, claim.ExpiresAt, claim.ClaimantId,
             claim.Agent, claim.SessionId, claim.ClaimantKind, local,
-            CachedWorkspace(claim, worker, cached));
+            CachedWorkspace(claim, worker, cached), claim.ExecutionPhase);
     }
 
     /// <summary>
@@ -838,7 +846,10 @@ public sealed class GitHubClaimService(
         AgentExecutionContext context, DateTimeOffset now, TrackerConfig config, string? previous) =>
         new(3, Guid.NewGuid().ToString("N"), worker, now, now.AddMinutes(config.LeaseMinutes), type,
             claimantId, Guid.NewGuid().ToString("N"), previous, context.Agent, context.SessionId,
-            ClaimantKinds.ToStorageValue(context.EffectiveClaimantKind));
+            ClaimantKinds.ToStorageValue(context.EffectiveClaimantKind),
+            ExecutionPhase: context.EffectiveClaimantKind == ClaimantKind.Agent
+                ? ClaimExecutionPhases.Normalize(context.ExecutionPhase)
+                : null);
 
     private static ClaimResult Result(ClaimRecord claim, ClaimOutcome outcome, bool takeover) =>
         new(outcome, claim.InstallationId, claim.ExpiresAt, claim.EventId,
@@ -847,7 +858,8 @@ public sealed class GitHubClaimService(
                 ? claim.ClaimToken
                 : null,
             takeover,
-            claim.WorkspacePath);
+            claim.WorkspacePath,
+            claim.ExecutionPhase);
 
     private static string ResolveClaimantId(AgentExecutionContext context, bool generate)
     {

@@ -45,6 +45,41 @@ public sealed class AgentProcessRunnerTests
     }
 
     [Fact]
+    public async Task Process_started_callback_runs_only_after_a_process_is_started()
+    {
+        if (OperatingSystem.IsWindows() || !File.Exists("/bin/sh"))
+            return;
+        var runner = new AgentProcessRunner(new FixedExecutableResolver("/bin/sh"));
+        var invocation = new AgentInvocation(
+            "codex",
+            [
+                "-c",
+                "printf '{\"type\":\"thread.started\",\"thread_id\":\"thread-42\"}\\n'; " +
+                "printf '{\"type\":\"turn.completed\"}\\n'"
+            ],
+            Path.GetTempPath(),
+            new Dictionary<string, string>());
+        var started = false;
+
+        var result = await runner.RunAsync(
+            invocation,
+            new CodexAgentAdapter(),
+            TimeSpan.FromSeconds(5),
+            new Dictionary<string, string>(),
+            processStarted: _ =>
+            {
+                started = true;
+                return Task.CompletedTask;
+            },
+            sessionStarted: null,
+            killOnCancellation: true,
+            CancellationToken.None);
+
+        Assert.True(started);
+        Assert.Equal(AgentOutcome.Succeeded, result.Outcome);
+    }
+
+    [Fact]
     public async Task Process_can_explicitly_remove_sensitive_ambient_environment()
     {
         if (OperatingSystem.IsWindows() || !File.Exists("/bin/sh"))

@@ -150,7 +150,8 @@ public sealed class GitHubClaimServiceTests
         var process = new InMemoryCommentsProcess(Now);
         var service = CreateService(process, "worker-a");
         var agent = new AgentExecutionContext("codex", "one", AgentContextSource.ExplicitOption,
-            ClaimantKind: ClaimantKind.Agent, ClaimantId: "codex:one");
+            ClaimantKind: ClaimantKind.Agent, ClaimantId: "codex:one",
+            ExecutionPhase: ClaimExecutionPhases.Preparing);
         var first = await service.TryClaimAsync(SharedConfig, ItemId, agent, CancellationToken.None);
         await service.RenewAsync(SharedConfig, ItemId, new ClaimHandle(agent, first.ClaimToken),
             "/tmp/resumable", "one", CancellationToken.None);
@@ -163,6 +164,7 @@ public sealed class GitHubClaimServiceTests
         Assert.Equal("/tmp/resumable", takeover.WorkspacePath);
         Assert.Equal("one", takeover.SessionId);
         Assert.Equal("codex", takeover.Agent);
+        Assert.Null(takeover.ExecutionPhase);
         var stale = await Assert.ThrowsAsync<Highbyte.Wrighty.Errors.TrackerException>(() =>
             service.ValidateAsync(SharedConfig, ItemId, new ClaimHandle(agent, first.ClaimToken), CancellationToken.None));
         Assert.Equal("CLAIM_STALE", stale.Code);
@@ -189,6 +191,48 @@ public sealed class GitHubClaimServiceTests
         Assert.Equal(1, renewals);
         // Ownership is unaffected: the surviving renewal still resolves as the active claim.
         Assert.True(await service.IsOwnedByCurrentWorkerAsync(Config, ItemId, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Claim_execution_phase_transitions_from_preparing_to_invoking_on_renewal()
+    {
+        var process = new InMemoryCommentsProcess(Now);
+        var service = CreateService(process, "worker-a");
+        var preparing = new AgentExecutionContext(
+            "codex",
+            null,
+            AgentContextSource.ExplicitOption,
+            ClaimantKind: ClaimantKind.Agent,
+            ClaimantId: "agent:worker:test",
+            ExecutionPhase: ClaimExecutionPhases.Preparing);
+        var claim = await service.TryClaimAsync(Config, ItemId, preparing, CancellationToken.None);
+
+        Assert.Equal(ClaimExecutionPhases.Preparing, claim.ExecutionPhase);
+        Assert.Equal(ClaimExecutionPhases.Preparing,
+            (await service.GetOwnershipAsync(Config, ItemId, CancellationToken.None)).ExecutionPhase);
+
+        var invoking = preparing with { ExecutionPhase = ClaimExecutionPhases.Invoking };
+        await service.RenewAsync(
+            Config,
+            ItemId,
+            new ClaimHandle(invoking, claim.ClaimToken),
+            "/tmp/ws",
+            sessionId: null,
+            CancellationToken.None);
+
+        Assert.Equal(ClaimExecutionPhases.Invoking,
+            (await service.GetOwnershipAsync(Config, ItemId, CancellationToken.None)).ExecutionPhase);
+
+        var phasePreserving = invoking with { ExecutionPhase = null };
+        await service.RenewAsync(
+            Config,
+            ItemId,
+            new ClaimHandle(phasePreserving, claim.ClaimToken),
+            "/tmp/ws",
+            sessionId: null,
+            CancellationToken.None);
+        Assert.Equal(ClaimExecutionPhases.Invoking,
+            (await service.GetOwnershipAsync(Config, ItemId, CancellationToken.None)).ExecutionPhase);
     }
 
     [Fact]

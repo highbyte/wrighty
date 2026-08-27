@@ -613,7 +613,8 @@ public static class OperationalStatusDisplay
         operationalStatus switch
         {
             OperationalStatuses.NeedsAttention => "Needs attention",
-            OperationalStatuses.AgentActive => $"{agentLabel ?? "Agent"} active",
+            OperationalStatuses.WorkerPreparing => "Worker preparing",
+            OperationalStatuses.AgentActive => $"{agentLabel ?? "Agent"} working",
             OperationalStatuses.Queued => "Resume queued",
             OperationalStatuses.RetryScheduled => "Retry scheduled",
             OperationalStatuses.HandoffQueued => "Handoff queued",

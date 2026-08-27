@@ -1125,7 +1125,9 @@ wrighty status --json   # same groups for scripting
 - **Completed — retained worktree** — finished items whose worktree is still present, each with the
   branch, its `dirty`/`merged` git state, and the integration commands for the configured policy.
 - **Paused — resumable session** — retained sessions waiting to be resumed, with the resume command.
-- **Active** — items with a live claim (agent processing, human editing, automation).
+- **Active** — items with a live claim. A worker-run claim reports **Worker preparing** while the
+  workspace and launch are being prepared, then the selected agent as **processing** after its
+  operating-system process starts; human editing and automation claims retain their own labels.
 - **Resume queued** — items marked to be resumed by a continuous worker.
 - **Retry scheduled** — retained sessions waiting for their bounded retry time.
 - **Handoff queued** — retained workspaces waiting for a due cross-agent continuation by the

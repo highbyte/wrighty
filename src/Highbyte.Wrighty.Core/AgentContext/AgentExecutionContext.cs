@@ -7,7 +7,8 @@ public sealed record AgentExecutionContext(
     string? Warning = null,
     ClaimantKind ClaimantKind = ClaimantKind.Unknown,
     string? ClaimantId = null,
-    string? ClaimToken = null)
+    string? ClaimToken = null,
+    string? ExecutionPhase = null)
 {
     public ClaimantKind EffectiveClaimantKind => ClaimantKind;
 

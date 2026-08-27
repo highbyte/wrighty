@@ -116,6 +116,13 @@ Operations organizes a bounded window. Wrighty asks the backend for one item bey
 and the visible count describe the loaded 100-item window, not the entire repository. Refine the
 filters or use the backend's native tracker when repository-wide discovery is required.
 
+Board cards distinguish a worker that has claimed an item from one that has started its agent. A
+neutral **Worker preparing** card means the worker owns the claim while it prepares the workspace
+and validates the launch. After the operating-system process starts, the card changes to a raised,
+outlined **Live — Agent working** treatment with a full-width execution banner, using the selected
+agent's display name. Its motion becomes static when the browser requests reduced motion. Older
+claims that do not record an execution phase continue to display as working for compatibility.
+
 ## Open a retained session from Operations
 
 When an operational item needs attention, or is Done with no active claim, and this installation
@@ -346,7 +353,9 @@ active/archived filtering, and renders each item's Markdown. The Board-wide sort
 priority, item number, creation/update time, configured priority rank, and title. A compact control
 in each status column can override that default; choose **Board sort** there to clear the override.
 Every explicit order uses item number as its stable tie-break, and missing values remain last in
-both directions.
+both directions. The default operational order keeps scarce live work visible above a potentially
+large backlog: **Agent working**, **Worker preparing**, **Needs attention**, retry scheduled,
+handoff queued, resume queued, then other items. Operations uses the same default order.
 
 Structured Board filters narrow claimant kind, associated agent, priority, claim ownership,
 and update recency. The associated agent is the active claim's agent when present, then the retained

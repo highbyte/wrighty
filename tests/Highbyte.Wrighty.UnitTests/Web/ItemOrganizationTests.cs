@@ -101,18 +101,22 @@ public sealed class ItemOrganizationTests
     }
 
     [Fact]
-    public void Default_sort_prioritizes_operational_state_then_priority_then_item_number()
+    public void Default_sort_puts_live_execution_before_needs_attention()
     {
         var cards = new[]
         {
             Card("local:12", "P1"),
             Card("local:3", "P0"),
-            Card("local:20", "P0", operationalStatus: OperationalStatuses.NeedsAttention)
+            Card("local:20", "P0", operationalStatus: OperationalStatuses.NeedsAttention),
+            Card("local:30", "P1", operationalStatus: OperationalStatuses.AgentActive),
+            Card("local:31", "P1", operationalStatus: OperationalStatuses.WorkerPreparing)
         };
 
         Array.Sort(cards, new BoardCardComparer(ItemSort.Default, ["P0", "P1"]));
 
-        Assert.Equal(["local:20", "local:3", "local:12"], cards.Select(card => card.Id));
+        Assert.Equal(
+            ["local:30", "local:31", "local:20", "local:3", "local:12"],
+            cards.Select(card => card.Id));
     }
 
     [Fact]
@@ -159,6 +163,24 @@ public sealed class ItemOrganizationTests
             new ItemSort(ItemSortField.Updated, true), ["P0", "P1"]));
 
         Assert.Equal(["local:2", "local:1", "local:3"], values.Select(value => value.Id));
+    }
+
+    [Fact]
+    public void Operations_default_sort_matches_the_board_live_execution_order()
+    {
+        var values = new[]
+        {
+            Operation("local:20", "Needs attention",
+                operationalStatus: OperationalStatuses.NeedsAttention),
+            Operation("local:31", "Worker preparing",
+                operationalStatus: OperationalStatuses.WorkerPreparing),
+            Operation("local:30", "Agent working",
+                operationalStatus: OperationalStatuses.AgentActive)
+        };
+
+        Array.Sort(values, new OperationsItemComparer(ItemSort.Default, ["P0", "P1"]));
+
+        Assert.Equal(["local:30", "local:31", "local:20"], values.Select(value => value.Id));
     }
 
     [Fact]
@@ -211,14 +233,15 @@ public sealed class ItemOrganizationTests
         string? requestedAgent = null,
         DateTimeOffset? updatedAt = null,
         string? claimantKind = null,
-        ClaimOwnershipState? claimState = null) =>
+        ClaimOwnershipState? claimState = null,
+        string operationalStatus = OperationalStatuses.RetryScheduled) =>
         new(
             id,
             title,
             "Todo",
             "P1",
             DispatchStates.RetryScheduled,
-            OperationalStatuses.RetryScheduled,
+            operationalStatus,
             null,
             null,
             RequestedAgent: requestedAgent,
