@@ -21,11 +21,15 @@ export const readyRegionSelectors = [
  * placeholder with its request never sent. Anything missing here is a page variant, not an error.
  */
 export function readyPageRegions(doc, htmx) {
+  // A ready event sent before htmx has processed the region is lost forever. The module and the
+  // deferred htmx script normally initialize in the expected order, but a cold or cached load can
+  // reverse them. Wait for the later htmx:load callback instead of consuming the one-time startup.
+  if (!htmx) return [];
   const regions = readyRegionSelectors
     .map((selector) => doc.querySelector(selector))
     .filter((region) => region !== null && region !== undefined);
   for (const region of regions) {
-    htmx?.process(region);
+    htmx.process(region);
     region.dispatchEvent(new CustomEvent("wrighty:ready"));
   }
   return regions;

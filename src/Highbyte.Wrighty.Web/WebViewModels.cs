@@ -214,10 +214,12 @@ public sealed record ItemPageModel(
     /// <summary>This item's execution profile, or null for the repository default.</summary>
     string? ExecutionProfile = null,
     /// <summary>
-    /// The profile names this editor may offer. Empty hides the control entirely, so a repository
-    /// that does not use profiles sees no new field.
+    /// The profile names this editor may offer. The page supplies Wrighty's built-in names when the
+    /// repository configures no vocabulary of its own.
     /// </summary>
     IReadOnlyList<string>? ExecutionProfiles = null,
+    string? RepositoryDefaultAgentLabel = null,
+    string? RepositoryDefaultExecutionProfile = null,
     DateTimeOffset? CreatedAt = null,
     DateTimeOffset? UpdatedAt = null,
     bool QueueAuthorizesExecution = false,
@@ -230,6 +232,16 @@ public sealed record ItemPageModel(
         Fields ?? EmptyFields;
 
     public IReadOnlyList<AgentOptionView> AgentOptions => AvailableAgents ?? [];
+
+    public string AgentPolicyDisplay => string.IsNullOrWhiteSpace(AgentPolicy)
+        ? ExecutionPolicyDisplay.RepositoryDefault(RepositoryDefaultAgentLabel)
+        : AgentOptions.FirstOrDefault(option => string.Equals(
+            option.Id, AgentPolicy, StringComparison.OrdinalIgnoreCase))?.DisplayName
+          ?? char.ToUpperInvariant(AgentPolicy[0]) + AgentPolicy[1..];
+
+    public string ExecutionProfileDisplay => string.IsNullOrWhiteSpace(ExecutionProfile)
+        ? ExecutionPolicyDisplay.RepositoryDefaultExecutionProfile(RepositoryDefaultExecutionProfile)
+        : ExecutionProfile;
 
     private static readonly IReadOnlyDictionary<string, string> EmptyFields =
         new Dictionary<string, string>();
@@ -419,11 +431,15 @@ public sealed record CreateItemPageModel(
     string? Priority,
     bool AutomaticExecutionAllowed,
     string? AgentPolicy,
+    string? ExecutionProfile,
     string CreationAttemptId,
     IReadOnlyList<string> Statuses,
     IReadOnlyList<string> Priorities,
     bool QueueAuthorizesExecution,
     string WorkerQueueStatus,
+    string? RepositoryDefaultAgentLabel,
+    string? RepositoryDefaultExecutionProfile,
+    IReadOnlyList<string> ExecutionProfiles,
     string? ErrorCode = null,
     string? ErrorMessage = null,
     IReadOnlyList<AgentOptionView>? AvailableAgents = null)
@@ -432,6 +448,19 @@ public sealed record CreateItemPageModel(
 }
 
 public sealed record AgentOptionView(string Id, string DisplayName);
+
+public static class ExecutionPolicyDisplay
+{
+    public static string RepositoryDefault(string? configuredValue) =>
+        string.IsNullOrWhiteSpace(configuredValue)
+            ? "Repository default"
+            : $"Repository default ({configuredValue})";
+
+    public static string RepositoryDefaultExecutionProfile(string? configuredProfile) =>
+        string.IsNullOrWhiteSpace(configuredProfile)
+            ? "Repository default (vendor defaults)"
+            : $"Repository default ({configuredProfile})";
+}
 
 public sealed record GitHubTargetView(
     string Host,

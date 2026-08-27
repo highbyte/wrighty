@@ -97,15 +97,16 @@ test("a page rendering no known region does nothing rather than failing", () => 
   assert.deepEqual(processed, []);
 });
 
-test("regions are readied without htmx present", () => {
-  // The ready event is what triggers each region's own request; it must not depend on htmx
-  // having loaded, which the optional call already allowed for.
+test("regions wait for htmx before consuming their one-time ready event", () => {
+  // Dispatching before htmx processes the hx-trigger attribute loses the event, leaving hidden
+  // regions such as Settings unloaded until some later interaction happens to refresh them.
   const events = [];
   const doc = documentWith({ "#operations-content": region("operations", events) });
 
-  readyPageRegions(doc, undefined);
+  const readied = readyPageRegions(doc, undefined);
 
-  assert.deepEqual(events, ["operations:wrighty:ready"]);
+  assert.deepEqual(readied, []);
+  assert.deepEqual(events, []);
 });
 
 test("the selector list is the documented region order", () => {

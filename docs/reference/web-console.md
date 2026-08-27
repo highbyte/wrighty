@@ -327,15 +327,19 @@ active-work, completion, and archive-triggering statuses are excluded and reject
 With worker-queue authorization enabled, status owns execution eligibility: creation in
 `defaultPickFrom` authorizes execution and the form shows that rule instead of an independent
 checkbox. With queue authorization disabled, the form offers **Allow automatic execution**, off by
-default. An agent policy does not imply eligibility. **Create item** uses the ordinary retry-safe
-creation pipeline. It never claims the new item, starts a worker, or launches a vendor agent.
+default. The form also offers the item's agent and execution-profile policies; neither implies
+eligibility. **Create item** uses the ordinary retry-safe creation pipeline. It never claims the new
+item, starts a worker, or launches a vendor agent.
 
 The item editor's **Execution policy** section explains status-controlled authorization when the
 worker queue owns that decision; otherwise it offers the per-item automatic-execution checkbox. It
-also carries agent policy and — when the repository configures an execution-profile vocabulary —
-**Execution profile**. A repository that does not use profiles sees no such control. The choice
-applies to the item's next fresh run; a recorded session keeps the model and effort it started with. See
-[Execution profiles](execution-profiles.md).
+also carries **Agent policy** and **Execution profile**. The profile choices come from the repository
+vocabulary when configured, or from the built-in `economy`, `balanced`, and `deep` names otherwise.
+For both policies, the repository-default choice includes the configured value when one exists; an
+execution profile with no repository default says **vendor defaults**, meaning Wrighty passes no
+model or effort override. The item viewer reports both policies with the same repository-default
+labels. A profile choice applies to the item's next fresh run; a recorded session keeps the model and
+effort it started with. See [Execution profiles](execution-profiles.md).
 
 The web console also shows configured status columns, priority and claim state, supports
 active/archived filtering, and renders each item's Markdown. The Board-wide sort offers operational

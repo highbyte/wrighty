@@ -89,6 +89,11 @@ public sealed class IndexModel(
         .Select(descriptor => new AgentOptionView(descriptor.Id, descriptor.DisplayName))
         .ToArray();
 
+    private IReadOnlyList<string> ExecutionProfileOptions() =>
+        state.Config.EffectiveWorker.EffectiveExecutionProfiles is { Count: > 0 } configuredProfiles
+            ? configuredProfiles
+            : BuiltInExecutionProfiles.Names;
+
     public IReadOnlyList<string> PriorityOptions => state.Config.LocalMarkdown?.Priorities ?? [];
 
     public string WebAuthenticationMode =>
@@ -1484,21 +1489,20 @@ public sealed class IndexModel(
             return [];
         }
 
-        var catalogs = new List<Workers.AgentModelCatalog>();
-        foreach (var agent in adaptersByName.Keys.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
-        {
-            try
+        return await Task.WhenAll(adaptersByName.Keys
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .Select(async agent =>
             {
-                catalogs.Add(await modelDiscoveries.DiscoverAsync(agent, cancellationToken));
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                catalogs.Add(Workers.AgentModelCatalog.Unavailable(
-                    agent, Workers.ModelDiscoveryFailure.Unavailable));
-            }
-        }
-
-        return catalogs;
+                try
+                {
+                    return await modelDiscoveries.DiscoverAsync(agent, cancellationToken);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    return Workers.AgentModelCatalog.Unavailable(
+                        agent, Workers.ModelDiscoveryFailure.Unavailable);
+                }
+            }));
     }
 
     private async Task<OperationalItemsLoadResult> LoadOperationalItemsAsync(
@@ -2172,11 +2176,15 @@ public sealed class IndexModel(
             null,
             false,
             null,
+            null,
             CreationAttempt.NormalizeOrCreate(null),
             creationStatuses,
             local.Priorities,
             state.Config.EffectiveWorker.UseWorkerQueue,
             state.Config.DefaultPickFrom,
+            RepositoryDefaultAgentLabel(),
+            state.Config.EffectiveWorker.DefaultExecutionProfile,
+            ExecutionProfileOptions(),
             AvailableAgents: AgentPolicyOptions()));
     }
 
@@ -2187,6 +2195,7 @@ public sealed class IndexModel(
         string? priority,
         bool automaticExecutionAllowed,
         string? agentPolicy,
+        string? executionProfile,
         string creationAttemptId,
         CancellationToken cancellationToken)
     {
@@ -2210,11 +2219,15 @@ public sealed class IndexModel(
             string.IsNullOrWhiteSpace(priority) ? null : priority,
             effectiveAutomaticExecutionAllowed,
             string.IsNullOrWhiteSpace(agentPolicy) ? null : agentPolicy,
+            string.IsNullOrWhiteSpace(executionProfile) ? null : executionProfile,
             creationAttemptId,
             creationStatuses,
             local.Priorities,
             queueAuthorizesExecution,
             state.Config.DefaultPickFrom,
+            RepositoryDefaultAgentLabel(),
+            state.Config.EffectiveWorker.DefaultExecutionProfile,
+            ExecutionProfileOptions(),
             AvailableAgents: AgentPolicyOptions());
 
         if (body.Length > MaximumBodyLength)
@@ -2237,7 +2250,8 @@ public sealed class IndexModel(
                     status,
                     draft.Priority,
                     AutomaticExecutionAllowed: effectiveAutomaticExecutionAllowed,
-                    AgentPolicy: draft.AgentPolicy),
+                    AgentPolicy: draft.AgentPolicy,
+                    ExecutionProfile: draft.ExecutionProfile),
                 creationAttemptId,
                 cancellationToken);
             return ClosePanelAndRefresh();
@@ -4305,7 +4319,9 @@ public sealed class IndexModel(
                 workspaceView),
             CanDelete: canDelete,
             ExecutionProfile: item.ExecutionProfile,
-            ExecutionProfiles: state.Config.Worker?.EffectiveExecutionProfiles ?? [],
+            ExecutionProfiles: ExecutionProfileOptions(),
+            RepositoryDefaultAgentLabel: RepositoryDefaultAgentLabel(),
+            RepositoryDefaultExecutionProfile: state.Config.EffectiveWorker.DefaultExecutionProfile,
             CreatedAt: item.CreatedAt,
             UpdatedAt: item.UpdatedAt,
             QueueAuthorizesExecution: state.Config.EffectiveWorker.UseWorkerQueue,
@@ -5245,6 +5261,14 @@ public sealed class IndexModel(
         return string.IsNullOrWhiteSpace(value)
             ? null
             : value.Trim().ToLowerInvariant();
+    }
+
+    private string? RepositoryDefaultAgentLabel()
+    {
+        var defaultAgent = state.Config.EffectiveWorker.DefaultAgent;
+        return string.IsNullOrWhiteSpace(defaultAgent)
+            ? null
+            : AgentDisplayName(defaultAgent);
     }
 
     private HashSet<string> InstalledProbeAgents() =>

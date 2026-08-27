@@ -205,7 +205,8 @@
     <h3>Execution policy</h3>
     <dl class="metadata">
       <div><dt>Automatic execution</dt><dd>@(Model.AutomaticExecutionAllowed ? "Allowed" : "Manual only")</dd></div>
-      <div><dt>Agent</dt><dd>@(Model.AgentPolicy is null ? "Repository default" : char.ToUpperInvariant(Model.AgentPolicy[0]) + Model.AgentPolicy[1..])</dd></div>
+      <div><dt>Agent</dt><dd>@Model.AgentPolicyDisplay</dd></div>
+      <div><dt>Execution profile</dt><dd>@Model.ExecutionProfileDisplay</dd></div>
     </dl>
   </section>
   <section class="metadata-group">

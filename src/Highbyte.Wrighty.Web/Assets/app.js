@@ -191,8 +191,10 @@ function visibleCountDescription(count, total, archived, filtered) {
 
 function dispatchAuthenticationReady() {
   if (authenticationReadyDispatched || (tokenAuthenticationRequired && !token)) return;
+  const htmx = globalThis.htmx;
+  if (!htmx) return;
   authenticationReadyDispatched = true;
-  readyPageRegions(document, globalThis.htmx);
+  readyPageRegions(document, htmx);
 }
 
 const contextPanel = createContextPanelController({
