@@ -89,7 +89,12 @@
       @Html.AntiForgeryToken()
       <input type="hidden" name="operation" value="agent-policy"><input type="hidden" name="revision" value="@configuration.Revision">
       <div class="settings-field-grid">
-        <label>Default agent<select id="configuration-default-agent" name="defaultAgent"><option value="" selected="@(displayedDefaultAgent is null or "")">Item or invocation policy</option>@foreach (var agent in agents) { <option value="@agent.Id" selected="@(agent.Id == displayedDefaultAgent)">@agent.DisplayName</option> }</select></label>
+        <div class="configuration-field">
+          <div class="configuration-field-label"><label for="configuration-default-agent">Default agent</label>
+            <details class="configuration-choice-help"><summary title="Explain the default agent"><span aria-hidden="true">i</span><span class="visually-hidden">Explain the default agent</span></summary><div class="configuration-choice-popover"><strong>No repository default</strong><span>An item Agent policy or an invocation <code>--agent</code> option must select the agent.</span><strong>Named agent</strong><span>Used as the fallback when neither the invocation nor the item selects an agent.</span></div></details>
+          </div>
+          <select id="configuration-default-agent" name="defaultAgent"><option value="" selected="@(displayedDefaultAgent is null or "")">No repository default</option>@foreach (var agent in agents) { <option value="@agent.Id" selected="@(agent.Id == displayedDefaultAgent)">@agent.DisplayName</option> }</select>
+        </div>
         <div class="configuration-field"><div class="configuration-field-label"><label for="configuration-requirements-mode">Requirements assessment</label><details class="configuration-choice-help"><summary title="Explain requirements assessment"><span aria-hidden="true">i</span><span class="visually-hidden">Explain requirements assessment</span></summary><div class="configuration-choice-popover"><strong>Enforced</strong><span>A separate readiness turn must approve the requirements before implementation.</span><strong>Inline</strong><span>The implementation turn receives a behavioral readiness guard.</span><strong>Off</strong><span>Disables Wrighty's assessment contract for new sessions.</span></div></details></div><select id="configuration-requirements-mode" name="requirementsAssessmentMode">@foreach (var value in new[] { "enforced", "inline", "off" }) { <option value="@value" selected="@(value == (IsDraft("agent-policy") ? draft!.RequirementsAssessmentMode : worker.EffectiveRequirementsAssessment.EffectiveMode))">@value</option> }</select></div>
         <div class="configuration-field"><div class="configuration-field-label"><label for="configuration-agent-permissions">Default permissions</label><details class="configuration-choice-help"><summary title="Explain agent permissions"><span aria-hidden="true">i</span><span class="visually-hidden">Explain agent permissions</span></summary><div class="configuration-choice-popover"><strong>Workspace</strong><span>Least privilege needed for the tracked work.</span><strong>Full</strong><span>Unrestricted vendor execution and machine-wide file access.</span></div></details></div><select id="configuration-agent-permissions" name="agentPermissions"><option value="workspace" selected="@((IsDraft("agent-policy") ? draft!.AgentPermissions : worker.AgentPermissions ?? "workspace") == "workspace")">workspace</option><option value="full" selected="@((IsDraft("agent-policy") ? draft!.AgentPermissions : worker.AgentPermissions ?? "workspace") == "full")">full</option></select></div>
       </div>
@@ -110,7 +115,14 @@
       @Html.AntiForgeryToken()<input type="hidden" name="operation" value="profiles"><input type="hidden" name="revision" value="@configuration.Revision">
       <h5>Execution profiles</h5>
       <div class="settings-field-grid"><div class="token-picker-setting settings-field--wide"><label for="configuration-execution-profiles">Repository profile names</label><div data-token-picker data-token-label="profile" data-allow-create="true" data-dependent-select="configuration-default-execution-profile" data-known-values="@JsonSerializer.Serialize(knownProfiles)"><input id="configuration-execution-profiles" name="executionProfiles" data-token-source value="@profilesValue" placeholder="economy, balanced, deep" autocomplete="off"></div></div><label>Default profile<select id="configuration-default-execution-profile" name="defaultExecutionProfile" data-empty-label="None"><option value="" selected="@(string.IsNullOrWhiteSpace(displayedDefaultProfile))">None</option>@foreach (var profile in displayedProfiles) { <option value="@profile" selected="@(string.Equals(profile, displayedDefaultProfile, StringComparison.OrdinalIgnoreCase))">@profile</option> }</select></label></div>
-      <p class="muted configuration-help">Shared policy: names live in the repository; each user maps them to local vendor models in User settings.</p>
+      <p class="muted configuration-help">
+        Shared policy: these names and the optional default live in the repository; User settings can
+        override what each name means for each agent on this computer. By default, the available profile
+        names are <code>economy</code>, <code>balanced</code>, and <code>deep</code>. If no names are
+        configured, those built-ins remain available when explicitly requested, but no profile is
+        applied automatically. Their mappings use the vendor-default model with low, medium, and high
+        effort respectively.
+      </p>
       @if (canonicalization) { <label class="checkbox-field"><input type="checkbox" name="approveCanonicalization" value="true" checked="@(IsDraft("profiles") && draft!.ApproveCanonicalization)">Approve JSON normalization</label> }
       <button type="submit" data-settings-save disabled="@(!IsDraft("profiles"))">Save execution profiles</button>
     </form>

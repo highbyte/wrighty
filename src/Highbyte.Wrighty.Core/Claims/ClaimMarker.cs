@@ -49,7 +49,10 @@ public static class ClaimMarker
                 Agent = Normalize(value.Agent),
                 SessionId = NormalizeOpaque(value.SessionId),
                 WorkspacePath = NormalizeWorkspace(value.WorkspacePath),
-                ClaimantKind = ClaimantKinds.ToStorageValue(ClaimantKinds.FromStorageValue(value.ClaimantKind))
+                ClaimantKind = ClaimantKinds.ToStorageValue(ClaimantKinds.FromStorageValue(value.ClaimantKind)),
+                ExecutionPhase = ClaimantKinds.FromStorageValue(value.ClaimantKind) == ClaimantKind.Agent
+                    ? ClaimExecutionPhases.Normalize(value.ExecutionPhase)
+                    : null
             };
             return true;
         }

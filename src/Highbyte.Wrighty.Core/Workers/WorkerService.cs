@@ -45,6 +45,7 @@ public sealed class WorkerService(
     // The lifecycle event name, distinct from the WorkerDispatchStates value of the same text: one
     // is the emitted event, the other the published item state.
     private const string NeedsAttentionEvent = "needs-attention";
+    private const string PreparingEvent = "preparing";
 
     /// <summary>Emitted whenever a claim turned out to be stale, expired, or owned elsewhere.</summary>
     private const string FencedEvent = "fenced";
@@ -629,7 +630,8 @@ public sealed class WorkerService(
             null,
             AgentContextSource.ExplicitOption,
             ClaimantKind: kind,
-            ClaimantId: claimantId);
+            ClaimantId: claimantId,
+            ExecutionPhase: ClaimExecutionPhases.Preparing);
         var agentSettings = await LoadUserSettingsAsync(cancellationToken);
         var providerStates = await ProviderStatesAsync(config, cancellationToken);
         await using var workspaceLease = options.WorkspaceMode == WorkspaceMode.Current
@@ -683,6 +685,11 @@ public sealed class WorkerService(
         if (selectedAgent is null || selectedDetail is null)
             throw new TrackerException("AGENT_REQUIRED",
                 "An eligible item did not resolve to a supported agent.", 2);
+        await emit(new WorkerEvent(
+            PreparingEvent,
+            selectedDetail.Id.Value,
+            selectedAgent,
+            ItemTitle: selectedDetail.Title));
         return await ProcessAsync(
             config, options, repositoryPath, picked.Claim, selectedDetail,
             selectedAgent, claimantId, kind, emit, cancellationToken);
@@ -1188,8 +1195,14 @@ public sealed class WorkerService(
             null,
             AgentContextSource.ExplicitOption,
             ClaimantKind: kind,
-            ClaimantId: claimantId);
+            ClaimantId: claimantId,
+            ExecutionPhase: ClaimExecutionPhases.Preparing);
         var claim = await tracker.ClaimAsync(config, id, context, cancellationToken);
+        await emit(new WorkerEvent(
+            PreparingEvent,
+            detail.Id.Value,
+            agentName,
+            ItemTitle: detail.Title));
 
         var targetStatus = options.ToStatus ?? config.DefaultPickTo;
         if (!string.IsNullOrWhiteSpace(targetStatus) &&
@@ -1263,9 +1276,15 @@ public sealed class WorkerService(
             AgentContextSource.ExplicitOption,
             ClaimantKind: ClaimantKind.Agent,
             ClaimantId: claimantId,
-            ClaimToken: currentClaimToken);
+            ClaimToken: currentClaimToken,
+            ExecutionPhase: ClaimExecutionPhases.Preparing);
         var claim = await tracker.TakeoverAsync(config, id, takeoverContext,
             currentClaimToken, cancellationToken);
+        await emit(new WorkerEvent(
+            PreparingEvent,
+            detail.Id.Value,
+            agentName,
+            ItemTitle: detail.Title));
         var claimContext = takeoverContext with { ClaimToken = claim.ClaimToken };
         var grant = new ClaimHandle(claimContext, claim.ClaimToken);
         detail = await ClearDispatchStateAsync(
@@ -1358,9 +1377,15 @@ public sealed class WorkerService(
             session.SessionId,
             AgentContextSource.ExplicitOption,
             ClaimantKind: ClaimantKind.Agent,
-            ClaimantId: claimantId);
+            ClaimantId: claimantId,
+            ExecutionPhase: ClaimExecutionPhases.Preparing);
         var claim = await tracker.ClaimAsync(
             config, detail.Id, context, cancellationToken);
+        await emit(new WorkerEvent(
+            PreparingEvent,
+            detail.Id.Value,
+            agentName,
+            ItemTitle: detail.Title));
         var claimContext = context with { ClaimToken = claim.ClaimToken };
         var grant = new ClaimHandle(claimContext, claim.ClaimToken);
 
@@ -1881,6 +1906,11 @@ public sealed class WorkerService(
 
         var (claimantId, claimContext, grant, handle) = await AcquireHandoffClaimAsync(
             launch, adapter, cancellationToken);
+        await emit(new WorkerEvent(
+            PreparingEvent,
+            detail.Id.Value,
+            targetAgent,
+            ItemTitle: detail.Title));
 
         var revalidated = await tracker.GetAsync(config, detail.Id, cancellationToken);
         var postClaimRequest = new LaunchPreflightRequest(
@@ -2031,7 +2061,8 @@ public sealed class WorkerService(
             null,
             AgentContextSource.ExplicitOption,
             ClaimantKind: ClaimantKind.Agent,
-            ClaimantId: claimantId);
+            ClaimantId: claimantId,
+            ExecutionPhase: ClaimExecutionPhases.Preparing);
         var claim = await tracker.ClaimAsync(
             launch.Config, launch.Detail.Id, context, cancellationToken);
         var claimGeneration = claim.ClaimToken
@@ -2382,7 +2413,8 @@ public sealed class WorkerService(
             AgentContextSource.ExplicitOption,
             ClaimantKind: kind,
             ClaimantId: claimantId,
-            ClaimToken: claimToken);
+            ClaimToken: claimToken,
+            ExecutionPhase: ClaimExecutionPhases.Preparing);
         return (handle, context, new ClaimHandle(context, claimToken));
     }
 
@@ -2626,6 +2658,22 @@ public sealed class WorkerService(
         int recoveryAttempt = 0,
         DispatchInfo? recoveryDispatch = null)
     {
+        // Lease renewals straddle process startup. Leaving their phase unspecified preserves
+        // whichever durable phase is current: preparing before Process.Start, invoking after the
+        // process-start callback records that transition.
+        var leaseGrant = run.Grant with
+        {
+            Claimant = run.Grant.Claimant with { ExecutionPhase = null }
+        };
+        var invokingContext = run.ClaimContext with
+        {
+            ExecutionPhase = ClaimExecutionPhases.Invoking
+        };
+        run = run with
+        {
+            ClaimContext = invokingContext,
+            Grant = run.Grant with { Claimant = invokingContext }
+        };
         var (config, options, detail, agentName, _,
             claimContext, grant, workspace, invocation, _, _, invocationKind,
             expectedSessionId, _, _, assessment) = run;
@@ -2642,7 +2690,7 @@ public sealed class WorkerService(
             run,
             runControl,
             observation);
-        var leaseTask = KeepAliveAsync(config, detail.Id, grant, workspace.Path,
+        var leaseTask = KeepAliveAsync(config, detail.Id, leaseGrant, workspace.Path,
             startedAt, deadline, initialClaimExpiresAt,
             options, emit, runCts, leaseCts.Token, () => fenceState.Fenced = true,
             () => runCts.Cancel());
@@ -2740,27 +2788,62 @@ public sealed class WorkerService(
                 new EndedRun(detail, agentName, grant, workspace, result, sessionId),
                 adapter, emit, cancellationToken, recoveryAttempt);
 
-        Task<AgentRunResult> RunAgentProcessAsync() => processes.RunAsync(
+        Task<AgentRunResult> RunAgentProcessAsync() => processes.RunWithCallbacksAsync(
             invocation,
             adapter,
             options.ItemTimeout,
             environment,
-            (sessionId, token) =>
-            {
-                observation.ObservedSessionId = sessionId;
-                if (invocationKind == AgentInvocationKind.Resume &&
-                    expectedSessionId is not null &&
-                    !SessionIdsEqual(expectedSessionId, sessionId))
+            new AgentProcessCallbacks(
+                token => RecordAgentProcessStartedAsync(
+                    config, detail, agentName, workspace, grant, token),
+                (sessionId, token) =>
                 {
-                    observation.UnexpectedSessionId = sessionId;
-                    return Task.CompletedTask;
-                }
-                return RecordSessionAsync(
-                    config, detail, agentName, workspace, grant, sessionId, token,
-                    fenceState, runCts, emit, run.Selection);
-            },
+                    observation.ObservedSessionId = sessionId;
+                    if (invocationKind == AgentInvocationKind.Resume &&
+                        expectedSessionId is not null &&
+                        !SessionIdsEqual(expectedSessionId, sessionId))
+                    {
+                        observation.UnexpectedSessionId = sessionId;
+                        return Task.CompletedTask;
+                    }
+                    return RecordSessionAsync(
+                        config, detail, agentName, workspace, grant, sessionId, token,
+                        fenceState, runCts, emit, run.Selection);
+                }),
             options.OnFenced == FencedAction.Kill,
             runCts.Token);
+    }
+
+    private async Task RecordAgentProcessStartedAsync(
+        TrackerConfig config,
+        WorkItemDetail detail,
+        string agentName,
+        Workspace workspace,
+        ClaimHandle grant,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await tracker.RenewClaimAsync(
+                config, detail.Id, grant, workspace.Path, grant.Claimant.SessionId,
+                workspace.Branch, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            var detailCode = exception is TrackerException trackerException
+                ? $" ({trackerException.Code})"
+                : string.Empty;
+            throw new TrackerException(
+                "AGENT_START_FAILED",
+                $"{AgentDisplayName(agentName)} started, but Wrighty could not record its active " +
+                $"invocation for '{detail.Id}'{detailCode}.",
+                7,
+                innerException: exception);
+        }
     }
 
     private IDisposable? PrepareInterruptionJournal(

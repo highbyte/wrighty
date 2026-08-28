@@ -47,10 +47,19 @@ not replace the board.
 
 ## Start, observe, and stop workers
 
-**Operations → Local worker processes** shows both kinds of local worker:
+The header's **Workers** button opens an installation-local anchored popover, matching the
+**Agents** control. It lists running
+workers, distinguishes **Worker preparing** from **Agent working**, shows the current item, agent,
+runtime, and heartbeat, and offers a confirmed graceful **Stop** plus **Details**. **Details** opens
+Operations at that exact worker and briefly highlights it. **Start new worker** adds a worker owned
+by the current web-console process. Stale or unverifiable registrations stay out of the running
+list and are linked to the complete Operations view.
+
+**Operations → Local worker processes** remains the complete surface and shows both kinds of local
+worker:
 
 - **Hosted by this web console** is a background task owned by the current `wrighty web` process.
-  Every **Start worker** action adds another generic continuous worker using the configuration
+  Every **Start worker** or **Start new worker** action adds another generic continuous worker using the configuration
   snapshot loaded at web startup. Closing, refreshing, or navigating away from the browser does
   not stop them. Stopping the `wrighty web` process does.
 - **Started outside the web console** is a `wrighty worker` process launched by a terminal, service
@@ -61,8 +70,9 @@ and current agent. Older worker versions that did not publish the agent say so i
 from the item or claim. Stale and unverifiable records label item, agent, and state as last-reported
 facts. The header's **Workers** button reports the verified running count from every tab, labels an
 idle pool, and highlights how many workers are actively processing an item. Stale or unverifiable
-registrations are called out separately. Select the button to open and focus **Operations → Local
-worker processes**. The current hosted worker card exposes a bounded structured operational log. Opening it
+registrations are called out separately. Select the button to open the running-worker overview;
+use **Details** or **View all in Operations** for the complete process controls. The current hosted
+worker card exposes a bounded structured operational log. Opening it
 starts at the newest event. Normal and manual Operations refreshes continue updating the whole
 worker card while preserving the disclosure and its scroll position for the same run. Updates
 follow the tail until the operator scrolls back, at which point Wrighty preserves that reading
@@ -115,6 +125,13 @@ Operations organizes a bounded window. Wrighty asks the backend for one item bey
 100, trims the sentinel, and shows a notice when more items exist. In that case sorting, filtering,
 and the visible count describe the loaded 100-item window, not the entire repository. Refine the
 filters or use the backend's native tracker when repository-wide discovery is required.
+
+Board cards distinguish a worker that has claimed an item from one that has started its agent. A
+neutral **Worker preparing** card means the worker owns the claim while it prepares the workspace
+and validates the launch. After the operating-system process starts, the card changes to a raised,
+outlined **Live — Agent working** treatment with a full-width execution banner, using the selected
+agent's display name. Its motion becomes static when the browser requests reduced motion. Older
+claims that do not record an execution phase continue to display as working for compatibility.
 
 ## Open a retained session from Operations
 
@@ -327,22 +344,28 @@ active-work, completion, and archive-triggering statuses are excluded and reject
 With worker-queue authorization enabled, status owns execution eligibility: creation in
 `defaultPickFrom` authorizes execution and the form shows that rule instead of an independent
 checkbox. With queue authorization disabled, the form offers **Allow automatic execution**, off by
-default. An agent policy does not imply eligibility. **Create item** uses the ordinary retry-safe
-creation pipeline. It never claims the new item, starts a worker, or launches a vendor agent.
+default. The form also offers the item's agent and execution-profile policies; neither implies
+eligibility. **Create item** uses the ordinary retry-safe creation pipeline. It never claims the new
+item, starts a worker, or launches a vendor agent.
 
 The item editor's **Execution policy** section explains status-controlled authorization when the
 worker queue owns that decision; otherwise it offers the per-item automatic-execution checkbox. It
-also carries agent policy and — when the repository configures an execution-profile vocabulary —
-**Execution profile**. A repository that does not use profiles sees no such control. The choice
-applies to the item's next fresh run; a recorded session keeps the model and effort it started with. See
-[Execution profiles](execution-profiles.md).
+also carries **Agent policy** and **Execution profile**. The profile choices come from the repository
+vocabulary when configured, or from the built-in `economy`, `balanced`, and `deep` names otherwise.
+For both policies, the repository-default choice includes the configured value when one exists; an
+execution profile with no repository default says **vendor defaults**, meaning Wrighty passes no
+model or effort override. The item viewer reports both policies with the same repository-default
+labels. A profile choice applies to the item's next fresh run; a recorded session keeps the model and
+effort it started with. See [Execution profiles](execution-profiles.md).
 
 The web console also shows configured status columns, priority and claim state, supports
 active/archived filtering, and renders each item's Markdown. The Board-wide sort offers operational
 priority, item number, creation/update time, configured priority rank, and title. A compact control
 in each status column can override that default; choose **Board sort** there to clear the override.
 Every explicit order uses item number as its stable tie-break, and missing values remain last in
-both directions.
+both directions. The default operational order keeps scarce live work visible above a potentially
+large backlog: **Agent working**, **Worker preparing**, **Needs attention**, retry scheduled,
+handoff queued, resume queued, then other items. Operations uses the same default order.
 
 Structured Board filters narrow claimant kind, associated agent, priority, claim ownership,
 and update recency. The associated agent is the active claim's agent when present, then the retained

@@ -95,6 +95,9 @@ public sealed class WorkerRunControlTests
     [Theory]
     [InlineData("started")]
     [InlineData("resumed")]
+    [InlineData("retry-started")]
+    [InlineData("handoff-started")]
+    [InlineData("requirements-assessment-started")]
     [InlineData("running")]
     [InlineData("session")]
     public void Worker_instance_projection_tracks_running_events(string type)
@@ -115,6 +118,26 @@ public sealed class WorkerRunControlTests
             new WorkerEvent(type, "local:42", "codex"),
             control);
         Assert.Equal(WorkerInstanceState.Draining, projected!.State);
+    }
+
+    [Fact]
+    public void Worker_instance_projection_distinguishes_preparation_and_carries_the_item_title()
+    {
+        using var control = new WorkerRunControl();
+
+        var projected = WorkerInstanceEventProjection.Project(
+            new WorkerEvent(
+                "preparing",
+                "local:42",
+                "codex",
+                ItemTitle: "Add a worker overview"),
+            control);
+
+        Assert.NotNull(projected);
+        Assert.Equal("local:42", projected.ItemId);
+        Assert.Equal("Add a worker overview", projected.ItemTitle);
+        Assert.Equal("codex", projected.Agent);
+        Assert.Equal(WorkerInstanceState.PreparingItem, projected.State);
     }
 
     [Theory]

@@ -97,15 +97,16 @@ test("a page rendering no known region does nothing rather than failing", () => 
   assert.deepEqual(processed, []);
 });
 
-test("regions are readied without htmx present", () => {
-  // The ready event is what triggers each region's own request; it must not depend on htmx
-  // having loaded, which the optional call already allowed for.
+test("regions wait for htmx before consuming their one-time ready event", () => {
+  // Dispatching before htmx processes the hx-trigger attribute loses the event, leaving hidden
+  // regions such as Settings unloaded until some later interaction happens to refresh them.
   const events = [];
   const doc = documentWith({ "#operations-content": region("operations", events) });
 
-  readyPageRegions(doc, undefined);
+  const readied = readyPageRegions(doc, undefined);
 
-  assert.deepEqual(events, ["operations:wrighty:ready"]);
+  assert.deepEqual(readied, []);
+  assert.deepEqual(events, []);
 });
 
 test("the selector list is the documented region order", () => {
@@ -134,19 +135,23 @@ test("Agents polling continues during probes but pauses during mutations", () =>
   const events = [];
   const agents = region("agents", events);
   agents.matches = () => false;
-  agents.querySelector = selector => {
-    assert.equal(selector, ".htmx-request:not([data-agent-probe-request])");
-    return null;
-  };
+  agents.querySelector = () => null;
   const doc = documentWith({ "#agents-region": agents });
   doc.visibilityState = "visible";
 
   assert.equal(refreshAgentsInventory(doc), true);
-  assert.deepEqual(events, ["agents:wrighty:refresh"]);
+  assert.deepEqual(events, ["agents:wrighty:agents-refresh"]);
 
-  agents.querySelector = () => ({ kind: "toggle" });
+  agents.querySelector = selector => selector === ".agents-menu[open]"
+    ? { open: true }
+    : null;
   assert.equal(refreshAgentsInventory(doc), false);
-  assert.deepEqual(events, ["agents:wrighty:refresh"]);
+  assert.deepEqual(events, ["agents:wrighty:agents-refresh"]);
+
+  agents.querySelector = selector => selector ===
+    ".htmx-request:not([data-agent-probe-request])" ? { kind: "toggle" } : null;
+  assert.equal(refreshAgentsInventory(doc), false);
+  assert.deepEqual(events, ["agents:wrighty:agents-refresh"]);
 });
 
 test("worker navigation focuses the stable tab and scrolls the worker controls", () => {
@@ -180,6 +185,27 @@ test("worker navigation remains pending until worker controls have loaded", () =
 
   assert.equal(revealWorkerProcesses(doc), false);
   assert.deepEqual(actions, [["focus-tab", { preventScroll: true }]]);
+});
+
+test("worker details navigation reveals and highlights the selected worker", () => {
+  const actions = [];
+  const worker = {
+    classList: { add(value) { actions.push(["class", value]); } },
+    scrollIntoView(options) { actions.push(["scroll-worker", options]); }
+  };
+  const doc = documentWith({
+    "#tab-operations": {
+      focus(options) { actions.push(["focus-tab", options]); }
+    }
+  });
+  doc.getElementById = id => id === "worker-instance-run-42" ? worker : null;
+
+  assert.equal(revealWorkerProcesses(doc, "run-42"), true);
+  assert.deepEqual(actions, [
+    ["focus-tab", { preventScroll: true }],
+    ["class", "worker-row-focused"],
+    ["scroll-worker", { block: "start", behavior: "auto" }]
+  ]);
 });
 
 test("Operations polling pauses off-tab and while the page is hidden", () => {

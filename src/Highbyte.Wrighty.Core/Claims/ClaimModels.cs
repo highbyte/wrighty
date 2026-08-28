@@ -3,6 +3,19 @@ using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.Claims;
 
+public static class ClaimExecutionPhases
+{
+    public const string Preparing = "preparing";
+    public const string Invoking = "invoking";
+
+    public static string? Normalize(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        Preparing => Preparing,
+        Invoking => Invoking,
+        _ => null
+    };
+}
+
 [method: System.Text.Json.Serialization.JsonConstructor]
 public sealed record ClaimRecord(
     int Version,
@@ -17,7 +30,8 @@ public sealed record ClaimRecord(
     string? Agent = null,
     string? SessionId = null,
     string ClaimantKind = "unknown",
-    string? WorkspacePath = null);
+    string? WorkspacePath = null,
+    string? ExecutionPhase = null);
 
 public sealed record ClaimEvent(
     long CommentId,
@@ -44,7 +58,8 @@ public sealed record ClaimResult(
     string? ClaimantId = null,
     string? ClaimToken = null,
     bool TakeoverAvailable = false,
-    string? WorkspacePath = null);
+    string? WorkspacePath = null,
+    string? ExecutionPhase = null);
 
 public enum ClaimOwnershipState
 {
@@ -62,7 +77,8 @@ public sealed record ClaimOwnershipResult(
     string? SessionId = null,
     string ClaimantKind = "unknown",
     bool TakeoverAvailable = false,
-    string? WorkspacePath = null);
+    string? WorkspacePath = null,
+    string? ExecutionPhase = null);
 
 /// <summary>
 /// The durable outcome of the most recent agent run recorded for a work item. Captured when the

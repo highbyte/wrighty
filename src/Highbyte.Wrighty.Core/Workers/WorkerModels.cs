@@ -97,7 +97,10 @@ public sealed record WorkerEvent(
     ProviderCapacity? ProviderCapacity = null,
     // The effective spawned-agent permission posture for this run, so a machine consumer can see
     // what the agent was actually granted rather than inferring it from the vendor argv.
-    AgentPermissions? Permissions = null);
+    AgentPermissions? Permissions = null,
+    // Local worker-process presentation only. It lets the web console identify the active item
+    // without polling the tracker while its worker drawer is open.
+    string? ItemTitle = null);
 
 public enum WorkerEventSemantic
 {
@@ -114,7 +117,7 @@ public static class WorkerEventClassifier
     {
         "check" or "finished" or "workspace-removed" or "requirements-assessment-ready" =>
             WorkerEventSemantic.Success,
-        "info" or "ready" or "started" or "resumed" or "session" or "dry-run" or
+        "info" or "ready" or "preparing" or "started" or "resumed" or "session" or "dry-run" or
             "retry-due" or "retry-started" or "handoff-due" or "handoff-directed" or
             "handoff-started" or
             "provider-probe-started" or "provider-available" or

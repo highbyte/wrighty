@@ -135,6 +135,30 @@ public sealed class ExecutionSelectionRecordingTests : IDisposable
     }
 
     [Fact]
+    public async Task Worker_marks_the_claim_invoking_when_the_process_reports_that_it_started()
+    {
+        var (backend, config, id) = await SeedAsync(new WorkerConfig
+        {
+            RequirementsAssessment = new WorkerRequirementsAssessmentConfig { Mode = "inline" },
+            UseWorkerQueue = false
+        });
+        var runner = new PhaseObservingRunner(backend, config, id);
+        var worker = new WorkerService(
+            new TrackerService(new TrackerBackendRegistry([backend])),
+            runner,
+            new CurrentWorkspace(),
+            [new ClaudeAgentAdapter()],
+            clock: () => clock.UtcNow,
+            agentVersions: new StubVersionProbe("claude 9.9.9"));
+
+        await worker.RunAsync(
+            config, Options(), directory, _ => Task.CompletedTask, CancellationToken.None);
+
+        Assert.Equal(ClaimExecutionPhases.Preparing, runner.PhaseBeforeProcessStarted);
+        Assert.Equal(ClaimExecutionPhases.Invoking, runner.PhaseAfterProcessStarted);
+    }
+
+    [Fact]
     public async Task A_selection_survives_without_a_version_when_none_can_be_read()
     {
         // The version is a best-effort note; a machine that cannot report one still gets the
@@ -203,6 +227,45 @@ public sealed class ExecutionSelectionRecordingTests : IDisposable
             if (sessionStarted is not null)
                 await sessionStarted(sessionId, cancellationToken);
             return new AgentRunResult(AgentOutcome.Succeeded, sessionId, "Needs a decision.");
+        }
+    }
+
+    private sealed class PhaseObservingRunner(
+        LocalMarkdownTrackerBackend backend,
+        TrackerConfig config,
+        WorkItemId id) : IAgentProcessRunner
+    {
+        public string? PhaseBeforeProcessStarted { get; private set; }
+        public string? PhaseAfterProcessStarted { get; private set; }
+
+        public Task<AgentRunResult> RunAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            Func<string, CancellationToken, Task>? sessionStarted,
+            bool killOnCancellation,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException("The worker must use the process-start-aware overload.");
+
+        public async Task<AgentRunResult> RunWithCallbacksAsync(
+            AgentInvocation invocation,
+            IAgentAdapter adapter,
+            TimeSpan timeout,
+            IReadOnlyDictionary<string, string> grantEnvironment,
+            AgentProcessCallbacks callbacks,
+            bool killOnCancellation,
+            CancellationToken cancellationToken)
+        {
+            PhaseBeforeProcessStarted = (await backend.GetClaimOwnershipAsync(
+                config, id, cancellationToken)).ExecutionPhase;
+            Assert.NotNull(callbacks.ProcessStarted);
+            await callbacks.ProcessStarted(cancellationToken);
+            PhaseAfterProcessStarted = (await backend.GetClaimOwnershipAsync(
+                config, id, cancellationToken)).ExecutionPhase;
+            if (callbacks.SessionStarted is not null)
+                await callbacks.SessionStarted("session-phase", cancellationToken);
+            return new AgentRunResult(AgentOutcome.Succeeded, "session-phase", "Needs a decision.");
         }
     }
 

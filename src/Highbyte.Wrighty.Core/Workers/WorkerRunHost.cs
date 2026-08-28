@@ -29,6 +29,7 @@ public sealed record WorkerRunCallbacks(
 
 internal sealed record WorkerInstanceEventState(
     string? ItemId,
+    string? ItemTitle,
     string? Agent,
     WorkerInstanceState State);
 
@@ -38,17 +39,23 @@ internal static class WorkerInstanceEventProjection
         WorkerEvent value,
         WorkerRunControl control)
     {
-        var running = value.Type is "started" or "resumed" or "running" or "session";
+        var preparing = value.Type == "preparing";
+        var running = value.Type is "started" or "resumed" or "retry-started" or
+            "handoff-started" or "requirements-assessment-started" or "running" or "session";
         var terminal = value.Type is "finished" or "needs-attention" or "failed" or "fenced"
             or "timed-out" or "rejected" or "retry-scheduled" or "interrupted";
-        if (running && value.ItemId is not null)
+        if ((preparing || running) && value.ItemId is not null)
         {
+            var state = WorkerInstanceState.RunningItem;
+            if (control.IntakeClosed)
+                state = WorkerInstanceState.Draining;
+            else if (preparing)
+                state = WorkerInstanceState.PreparingItem;
             return new WorkerInstanceEventState(
                 value.ItemId,
+                value.ItemTitle,
                 value.Agent,
-                control.IntakeClosed
-                    ? WorkerInstanceState.Draining
-                    : WorkerInstanceState.RunningItem);
+                state);
         }
         if (!terminal)
             return null;
@@ -58,7 +65,7 @@ internal static class WorkerInstanceEventProjection
             terminalState = WorkerInstanceState.Finalizing;
         else if (control.IntakeClosed)
             terminalState = WorkerInstanceState.Draining;
-        return new WorkerInstanceEventState(null, null, terminalState);
+        return new WorkerInstanceEventState(null, null, null, terminalState);
     }
 }
 
@@ -284,10 +291,10 @@ public sealed class WorkerRunHost(
                     registration,
                     null,
                     null,
+                    null,
                     WorkerInstanceState.Finalizing,
                     warningState,
-                    callbacks.Warn,
-                    CancellationToken.None);
+                    callbacks.Warn);
             }
             await pollingStop.CancelAsync();
             try
@@ -394,11 +401,11 @@ public sealed class WorkerRunHost(
             await TryUpdateAsync(
                 registration,
                 projected.ItemId,
+                projected.ItemTitle,
                 projected.Agent,
                 projected.State,
                 warningState,
-                warn,
-                CancellationToken.None);
+                warn);
         }
         await emit(value);
     }
@@ -406,15 +413,20 @@ public sealed class WorkerRunHost(
     private static async Task TryUpdateAsync(
         IWorkerInstanceRegistration registration,
         string? itemId,
+        string? itemTitle,
         string? agent,
         WorkerInstanceState state,
         RegistryWarningState warningState,
-        Func<string, Task>? warn,
-        CancellationToken cancellationToken)
+        Func<string, Task>? warn)
     {
         try
         {
-            await registration.UpdateAsync(itemId, agent, state, cancellationToken);
+            await registration.UpdateAsync(
+                itemId,
+                itemTitle,
+                agent,
+                state,
+                CancellationToken.None);
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)

@@ -9,6 +9,7 @@ import {
   toggleSortDirection,
   dismissBoardFilterMenu,
   dismissHeaderPopovers,
+  toggleHeaderPopover,
   syncBoardFilterIndicator,
   clearBoardFilters,
   resetBoardView,
@@ -181,16 +182,17 @@ test("filter menu closes on an outside click but remains open for its fields", (
   assert.equal(menu.open, false);
 });
 
-test("Agents popover closes outside while retaining a click within it", () => {
+test("header popovers close outside while retaining a click within one", () => {
   const agentsTarget = {};
   const outside = {};
   const agents = {
+    classList: { contains: name => name === "agents-menu" },
     open: true,
     contains: target => target === agentsTarget
   };
   const doc = {
     querySelectorAll: selector => {
-      assert.equal(selector, ".agents-menu[open]");
+      assert.equal(selector, ".agents-menu[open], .worker-menu[open]");
       return [agents].filter(menu => menu.open);
     }
   };
@@ -202,6 +204,59 @@ test("Agents popover closes outside while retaining a click within it", () => {
   assert.equal(dismissHeaderPopovers(doc, outside), 0);
   assert.equal(dismissHeaderPopovers(null, outside), 0);
   assert.equal(dismissHeaderPopovers(doc, null), 0);
+});
+
+test("opening one header menu closes the other menu kind", () => {
+  const sourceWorkers = {
+    classList: { contains: name => name === "worker-menu" }
+  };
+  const target = {
+    closest: selector => selector.includes(".worker-menu") ? sourceWorkers : null
+  };
+  const agents = {
+    classList: { contains: name => name === "agents-menu" },
+    open: true,
+    contains: () => false
+  };
+  const workers = {
+    classList: { contains: name => name === "worker-menu" },
+    open: true,
+    contains: () => false
+  };
+  const doc = {
+    querySelectorAll: () => [agents, workers]
+  };
+
+  assert.equal(dismissHeaderPopovers(doc, target), 1);
+  assert.equal(agents.open, false);
+  assert.equal(workers.open, true);
+});
+
+test("header summary clicks synchronously open and close exactly one popover", () => {
+  const agents = {
+    classList: { contains: name => name === "agents-menu" },
+    open: true
+  };
+  const workers = {
+    classList: { contains: name => name === "worker-menu" },
+    open: false
+  };
+  const summary = {
+    closest: () => workers
+  };
+  const target = {
+    closest: selector => selector.includes(".worker-menu > summary") ? summary : null
+  };
+  const doc = {
+    querySelectorAll: () => [agents, workers].filter(menu => menu.open)
+  };
+
+  assert.deepEqual(toggleHeaderPopover(doc, target), { kind: "workers", open: true });
+  assert.equal(agents.open, false);
+  assert.equal(workers.open, true);
+  assert.deepEqual(toggleHeaderPopover(doc, target), { kind: "workers", open: false });
+  assert.equal(workers.open, false);
+  assert.equal(toggleHeaderPopover(doc, {}), null);
 });
 
 test("confirmation dialog clicks retain the underlying header popover", () => {

@@ -28,7 +28,10 @@ public sealed class ClaimFencingTests : IDisposable
     {
         var backend = Backend("worker-a");
         var id = await Create(backend, "Original", "Body", "Todo", "P1");
-        var agent = Context(ClaimantKind.Agent, "agent:one", "codex");
+        var agent = Context(ClaimantKind.Agent, "agent:one", "codex") with
+        {
+            ExecutionPhase = ClaimExecutionPhases.Preparing
+        };
         var first = await backend.TryClaimAsync(Config, id, agent, CancellationToken.None);
         var old = new ClaimHandle(agent, first.ClaimToken);
         await backend.RenewClaimAsync(Config, id, old, "/tmp/resumable", "session-one",
@@ -42,6 +45,7 @@ public sealed class ClaimFencingTests : IDisposable
         Assert.Equal("/tmp/resumable", takeover.WorkspacePath);
         Assert.Equal("session-one", takeover.SessionId);
         Assert.Equal("codex", takeover.Agent);
+        Assert.Null(takeover.ExecutionPhase);
         var detail = await backend.GetAsync(Config, id, CancellationToken.None);
         Assert.Equal(("Original", "Body", "Todo", "P1"), (detail!.Title, detail.Body, detail.Status, detail.Priority));
         await AssertStale(() => backend.UpdateAsync(Config, id,
@@ -157,6 +161,45 @@ public sealed class ClaimFencingTests : IDisposable
             CancellationToken.None);
 
         Assert.Equal(before, await File.ReadAllTextAsync(path));
+    }
+
+    [Fact]
+    public async Task Claim_execution_phase_transitions_from_preparing_to_invoking_on_renewal()
+    {
+        var backend = Backend("worker-a");
+        var id = await Create(backend);
+        var preparing = Context(ClaimantKind.Agent, "agent:one", "codex") with
+        {
+            ExecutionPhase = ClaimExecutionPhases.Preparing
+        };
+        var claim = await backend.TryClaimAsync(Config, id, preparing, CancellationToken.None);
+
+        Assert.Equal(ClaimExecutionPhases.Preparing, claim.ExecutionPhase);
+        Assert.Equal(ClaimExecutionPhases.Preparing,
+            (await backend.GetClaimOwnershipAsync(Config, id, CancellationToken.None)).ExecutionPhase);
+
+        var invoking = preparing with { ExecutionPhase = ClaimExecutionPhases.Invoking };
+        await backend.RenewClaimAsync(
+            Config,
+            id,
+            new ClaimHandle(invoking, claim.ClaimToken),
+            "/tmp/workspace-one",
+            sessionId: null,
+            CancellationToken.None);
+
+        Assert.Equal(ClaimExecutionPhases.Invoking,
+            (await backend.GetClaimOwnershipAsync(Config, id, CancellationToken.None)).ExecutionPhase);
+
+        var phasePreserving = invoking with { ExecutionPhase = null };
+        await backend.RenewClaimAsync(
+            Config,
+            id,
+            new ClaimHandle(phasePreserving, claim.ClaimToken),
+            "/tmp/workspace-one",
+            sessionId: null,
+            CancellationToken.None);
+        Assert.Equal(ClaimExecutionPhases.Invoking,
+            (await backend.GetClaimOwnershipAsync(Config, id, CancellationToken.None)).ExecutionPhase);
     }
 
     [Fact]

@@ -1,0 +1,186 @@
+@model WorkerOverviewPageModel
+@{
+  var running = Model.RunningWorkers();
+}
+<header class="worker-overview-header" data-worker-overview-revision="@Model.Revision">
+  <div>
+    <span class="eyebrow">@Model.LocalHostName</span>
+    <h2 id="worker-overview-heading">Workers on this installation</h2>
+    <p>@running.Count currently running</p>
+  </div>
+  <div class="worker-overview-heading-actions">
+    @if (Model.HostedWorkerAvailable)
+    {
+      <form method="post"
+            hx-post="/?handler=StartHostedWorker"
+            hx-target="#worker-overview-content"
+            hx-swap="innerHTML"
+            hx-disabled-elt="button"
+            data-confirm-title="Start a worker in this web console?"
+            data-confirm-message="The worker is owned by the wrighty web process and continues if this browser tab closes. It stops when the web process stops."
+            data-confirm-action="Start worker">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="surface" value="overview">
+        <button id="start-worker-from-overview" class="primary button-compact" type="submit">Start new worker</button>
+      </form>
+    }
+  </div>
+</header>
+
+@if (Model.ErrorCode is not null)
+{
+  <div id="worker-overview-error" class="error" role="alert"><strong>@Model.ErrorCode</strong> @Model.ErrorMessage</div>
+}
+
+@if (running.Count == 0)
+{
+  <div class="worker-overview-empty">
+    <strong>No workers are running</strong>
+    <p>Start a worker here or run <code>wrighty worker</code> from a terminal.</p>
+  </div>
+}
+else
+{
+  <ul class="worker-overview-list" aria-label="Running workers">
+  @foreach (var instance in running.Select(worker => worker.Instance))
+  {
+    var hostedRun = Model.HostedWorkers.FirstOrDefault(value => value.RunId == instance.RunId);
+    var ownedHere = hostedRun is not null;
+    var externallyStarted = instance.HostKind == WorkerHostKind.CliProcess;
+    var canControl = instance.ControlProtocolVersion == 1 &&
+      instance.SupportedStopModes is not null;
+    var isBusy = instance.CurrentItemId is not null;
+    var pendingStop = string.Equals(
+      Model.PendingStopRunId,
+      instance.RunId,
+      StringComparison.Ordinal);
+    var origin = "Another web console";
+    if (externallyStarted)
+      origin = "Terminal or service";
+    else if (ownedHere)
+      origin = "This web console";
+
+    var stateLabel = instance.State switch
+    {
+      WorkerInstanceState.PreparingItem => "Worker preparing",
+      WorkerInstanceState.RunningItem => "Agent working",
+      WorkerInstanceState.Draining => "Stopping",
+      WorkerInstanceState.StoppingNow => "Stopping agent now",
+      WorkerInstanceState.Finalizing => "Finalizing item",
+      WorkerInstanceState.Stopping => "Stopping",
+      _ => "Idle"
+    };
+    if (hostedRun?.State == WebHostedWorkerState.WaitingForWorkspace)
+      stateLabel = "Waiting for workspace";
+    if ((pendingStop || instance.State == WorkerInstanceState.Draining) && isBusy)
+      stateLabel = "Stopping after current item";
+    else if (pendingStop)
+      stateLabel = "Stopping";
+    var stateClass = instance.State switch
+    {
+      WorkerInstanceState.PreparingItem => "preparing",
+      WorkerInstanceState.RunningItem => "working",
+      WorkerInstanceState.Draining or WorkerInstanceState.StoppingNow or
+        WorkerInstanceState.Finalizing or WorkerInstanceState.Stopping => "stopping",
+      _ => "idle"
+    };
+    var stopTitle = "Stop worker hosted by another web console?";
+    var stopPrefix = "Another web-console process owns this worker. Wrighty will ask that process to stop it cooperatively. ";
+    if (externallyStarted)
+    {
+      stopTitle = "Stop externally started worker?";
+      stopPrefix = "This worker was started outside the web console. Wrighty will ask that terminal or service-owned process to stop cooperatively. If a service manager restarts it, stop the service there too. ";
+    }
+    else if (ownedHere)
+    {
+      stopTitle = "Stop worker?";
+      stopPrefix = string.Empty;
+      if (isBusy)
+        stopTitle = "Stop after the current item?";
+    }
+    var stopMessage = stopPrefix + "The idle worker will stop without claiming another item.";
+    if (isBusy)
+      stopMessage = stopPrefix + "The active agent session will be allowed to finish, including Wrighty's bookkeeping, and the worker will not claim another item.";
+    var disabledStopTitle = "This worker version does not advertise safe cooperative stop controls.";
+    if (pendingStop)
+      disabledStopTitle = "The worker is stopping.";
+
+    <li class="worker-overview-row worker-overview-@stateClass"
+        aria-label="@instance.InvocationSummary, @stateLabel">
+      <div class="worker-overview-row-heading">
+        <div>
+          <strong title="@instance.InvocationSummary">@instance.InvocationSummary</strong>
+          <span>@origin · PID @instance.ProcessId</span>
+        </div>
+        <span class="worker-overview-state">@stateLabel</span>
+      </div>
+
+      @if (instance.CurrentItemId is not null)
+      {
+        <div class="worker-overview-current-item">
+          <span>Current item</span>
+          <strong>
+            <span>@instance.CurrentItemId</span>
+            @if (!string.IsNullOrWhiteSpace(instance.CurrentItemTitle))
+            {
+              <span aria-hidden="true"> · </span><span>@instance.CurrentItemTitle</span>
+            }
+          </strong>
+        </div>
+      }
+
+      <dl class="worker-overview-facts">
+        <div><dt>Agent</dt><dd>@(instance.CurrentAgent ?? "—")</dd></div>
+        <div><dt>Runtime</dt><dd><time datetime="@instance.StartedAt.ToString("O")"
+          data-relative-time data-time-label="Started"
+          title="Started @instance.StartedAt.ToLocalTime().ToString("g")">Started @RelativeTimeDisplay.Label(instance.StartedAt)</time></dd></div>
+        <div><dt>Heartbeat</dt><dd><time datetime="@instance.LastHeartbeatAt.ToString("O")"
+          data-relative-time data-time-label="Seen"
+          title="Last heartbeat @instance.LastHeartbeatAt.ToLocalTime().ToString("g")">Seen @RelativeTimeDisplay.Label(instance.LastHeartbeatAt)</time></dd></div>
+      </dl>
+
+      <div class="worker-overview-actions">
+        @if (canControl && !pendingStop)
+        {
+          <form method="post"
+                hx-post="/?handler=StopWorker"
+                hx-target="#worker-overview-content"
+                hx-swap="innerHTML"
+                hx-disabled-elt="button"
+                data-confirm-title="@stopTitle"
+                data-confirm-message="@stopMessage"
+                data-confirm-action="Stop worker">
+            @Html.AntiForgeryToken()
+            <input type="hidden" name="surface" value="overview">
+            <input type="hidden" name="runId" value="@instance.RunId">
+            <input type="hidden" name="processId" value="@instance.ProcessId">
+            <input type="hidden" name="processStartIdentity" value="@instance.ProcessStartIdentity">
+            <input type="hidden" name="hostKind" value="@instance.HostKind">
+            <input type="hidden" name="mode" value="Drain">
+            <button type="submit">Stop</button>
+          </form>
+        }
+        else
+        {
+          <button type="button"
+                  disabled
+                  title="@disabledStopTitle">Stop</button>
+        }
+        <button type="button"
+                data-worker-details-run-id="@instance.RunId">Details</button>
+      </div>
+    </li>
+  }
+  </ul>
+}
+
+@if (Model.UnavailableCount > 0)
+{
+  var unavailableMessage = $"{Model.UnavailableCount} worker registrations need attention.";
+  if (Model.UnavailableCount == 1)
+    unavailableMessage = "1 worker registration needs attention.";
+  <footer class="worker-overview-footer">
+    <span>@unavailableMessage</span>
+    <button type="button" data-open-worker-processes>View all in Operations</button>
+  </footer>
+}

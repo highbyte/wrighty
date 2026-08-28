@@ -15,7 +15,8 @@ internal sealed record LocalClaimRecord(
     DateTimeOffset ExpiresAt,
     string ClaimantKind,
     string? WorkspacePath = null,
-    string? Branch = null)
+    string? Branch = null,
+    string? ExecutionPhase = null)
 {
     [System.Text.Json.Serialization.JsonIgnore]
     public bool HasAddress =>

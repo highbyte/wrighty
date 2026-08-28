@@ -21,11 +21,15 @@ export const readyRegionSelectors = [
  * placeholder with its request never sent. Anything missing here is a page variant, not an error.
  */
 export function readyPageRegions(doc, htmx) {
+  // A ready event sent before htmx has processed the region is lost forever. The module and the
+  // deferred htmx script normally initialize in the expected order, but a cold or cached load can
+  // reverse them. Wait for the later htmx:load callback instead of consuming the one-time startup.
+  if (!htmx) return [];
   const regions = readyRegionSelectors
     .map((selector) => doc.querySelector(selector))
     .filter((region) => region !== null && region !== undefined);
   for (const region of regions) {
-    htmx?.process(region);
+    htmx.process(region);
     region.dispatchEvent(new CustomEvent("wrighty:ready"));
   }
   return regions;
@@ -50,17 +54,18 @@ export function refreshVisibleOperations(doc) {
 }
 
 /**
- * Polls the Agents inventory while capacity probes run, but not while a short mutation is replacing
- * the same controls. Probe requests intentionally remain visible through read-only polling so the
- * operator sees each acquired probe and its warning state before the vendor call completes.
+ * Polls the Agents inventory while capacity probes run, but not while the popover is open or a
+ * short mutation is replacing the same controls. Direct actions still replace the open inventory;
+ * only background polling pauses, avoiding a visible close/reopen flicker.
  */
 export function refreshAgentsInventory(doc) {
   const agents = doc.querySelector("#agents-region");
+  const menuOpen = agents?.querySelector?.(".agents-menu[open]");
   const blockingRequest = agents?.matches?.(".htmx-request") ||
     agents?.querySelector?.(".htmx-request:not([data-agent-probe-request])");
-  if (!agents || doc.visibilityState !== "visible" || blockingRequest) return false;
+  if (!agents || doc.visibilityState !== "visible" || menuOpen || blockingRequest) return false;
 
-  agents.dispatchEvent(new CustomEvent("wrighty:refresh"));
+  agents.dispatchEvent(new CustomEvent("wrighty:agents-refresh"));
   return true;
 }
 
@@ -71,10 +76,13 @@ export function refreshAgentsInventory(doc) {
  * after each replacement, which also pulled the viewport back after the user had scrolled away.
  * The page tab is stable across swaps and remains the appropriate keyboard focus destination.
  */
-export function revealWorkerProcesses(doc) {
+export function revealWorkerProcesses(doc, runId = null) {
   doc.querySelector("#tab-operations")?.focus?.({ preventScroll: true });
-  const workerProcesses = doc.querySelector("#worker-processes");
+  const workerProcesses = runId
+    ? doc.getElementById?.(`worker-instance-${runId}`)
+    : doc.querySelector("#worker-processes");
   if (!workerProcesses) return false;
+  if (runId) workerProcesses.classList?.add?.("worker-row-focused");
   workerProcesses.scrollIntoView?.({ block: "start", behavior: "auto" });
   return true;
 }

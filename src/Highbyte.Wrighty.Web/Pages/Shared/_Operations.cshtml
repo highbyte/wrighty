@@ -105,10 +105,6 @@
   {
     <div id="github-target-health" class="error" role="alert"><strong>@Model.TargetErrorCode</strong> @Model.TargetErrorMessage</div>
   }
-  @if (Model.WorkerNotice is not null)
-  {
-    <output id="worker-operation-notice" class="notice">@Model.WorkerNotice</output>
-  }
   @if (Model.WorkerErrorCode is not null)
   {
     <div id="worker-operation-error" class="error" role="alert"><strong>@Model.WorkerErrorCode</strong> @Model.WorkerErrorMessage</div>
@@ -151,7 +147,7 @@
     <label>Operational
       <select name="operationalStatus">
         <option value="">Any</option>
-        @foreach (var value in new[] { OperationalStatuses.NeedsAttention, OperationalStatuses.AgentActive, OperationalStatuses.Queued, OperationalStatuses.RetryScheduled, OperationalStatuses.HandoffQueued, OperationalStatuses.Ready, OperationalStatuses.Completed })
+        @foreach (var value in new[] { OperationalStatuses.NeedsAttention, OperationalStatuses.AgentActive, OperationalStatuses.WorkerPreparing, OperationalStatuses.Queued, OperationalStatuses.RetryScheduled, OperationalStatuses.HandoffQueued, OperationalStatuses.Ready, OperationalStatuses.Completed })
         {
           <option value="@value" selected="@(query.OperationalStatus == value ? "selected" : null)">@(OperationalStatusDisplay.Label(value) ?? value)</option>
         }
@@ -473,7 +469,8 @@
             ? "Waiting for workspace"
             : instance.State switch
           {
-            WorkerInstanceState.RunningItem => "Processing",
+            WorkerInstanceState.PreparingItem => "Worker preparing",
+            WorkerInstanceState.RunningItem => "Agent working",
             WorkerInstanceState.Draining => "Draining",
             WorkerInstanceState.StoppingNow => "Stopping now",
             WorkerInstanceState.Finalizing => "Finalizing",

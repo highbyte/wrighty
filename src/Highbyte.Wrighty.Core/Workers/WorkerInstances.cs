@@ -14,7 +14,8 @@ public enum WorkerInstanceState
     Stopping,
     Draining,
     StoppingNow,
-    Finalizing
+    Finalizing,
+    PreparingItem
 }
 
 public enum WorkerHostKind
@@ -51,7 +52,8 @@ public sealed record WorkerInstance(
     WorkerHostKind HostKind = WorkerHostKind.CliProcess,
     string? CurrentAgent = null,
     int? ControlProtocolVersion = null,
-    IReadOnlyList<WorkerStopMode>? SupportedStopModes = null);
+    IReadOnlyList<WorkerStopMode>? SupportedStopModes = null,
+    string? CurrentItemTitle = null);
 
 public sealed record WorkerInstanceStatus(
     WorkerInstance Instance,
@@ -92,6 +94,14 @@ public interface IWorkerInstanceRegistration : IAsyncDisposable
         WorkerInstanceState state,
         CancellationToken cancellationToken) =>
         UpdateAsync(currentItemId, state, cancellationToken);
+
+    Task UpdateAsync(
+        string? currentItemId,
+        string? currentItemTitle,
+        string? currentAgent,
+        WorkerInstanceState state,
+        CancellationToken cancellationToken) =>
+        UpdateAsync(currentItemId, currentAgent, state, cancellationToken);
 
     Task<WorkerStopMode?> ReadStopRequestAsync(CancellationToken cancellationToken) =>
         Task.FromResult<WorkerStopMode?>(null);
@@ -604,15 +614,36 @@ public sealed class JsonWorkerInstanceRegistry(
             string? currentAgent,
             WorkerInstanceState state,
             CancellationToken cancellationToken)
+            => await UpdateAsync(
+                currentItemId,
+                currentItemTitle: null,
+                currentAgent,
+                state,
+                cancellationToken);
+
+        public async Task UpdateAsync(
+            string? currentItemId,
+            string? currentItemTitle,
+            string? currentAgent,
+            WorkerInstanceState state,
+            CancellationToken cancellationToken)
         {
             await gate.WaitAsync(cancellationToken);
             try
             {
                 if (disposed)
                     return;
+                string? nextItemTitle = null;
+                if (currentItemId is not null)
+                {
+                    nextItemTitle = currentItemTitle;
+                    if (string.Equals(current.CurrentItemId, currentItemId, StringComparison.Ordinal))
+                        nextItemTitle ??= current.CurrentItemTitle;
+                }
                 current = current with
                 {
                     CurrentItemId = currentItemId,
+                    CurrentItemTitle = nextItemTitle,
                     CurrentAgent = currentAgent,
                     State = state,
                     LastHeartbeatAt = clock()

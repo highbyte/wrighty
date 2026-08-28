@@ -37,7 +37,7 @@
       {
         <label>Agent policy
           <select aria-describedby="agent-policy-locked-help" disabled>
-            <option value="">No item preference</option>
+            <option value="">@ExecutionPolicyDisplay.RepositoryDefault(Model.RepositoryDefaultAgentLabel)</option>
             @foreach (var agent in Model.AgentOptions)
             {
               <option value="@agent.Id" selected="@(string.Equals(agent.Id, Model.AgentPolicy, StringComparison.OrdinalIgnoreCase))">@agent.DisplayName</option>
@@ -64,7 +64,7 @@
       {
         <label>Agent policy
           <select name="agentPolicy">
-            <option value="">No item preference</option>
+            <option value="">@ExecutionPolicyDisplay.RepositoryDefault(Model.RepositoryDefaultAgentLabel)</option>
             @foreach (var agent in Model.AgentOptions)
             {
               <option value="@agent.Id" selected="@(string.Equals(agent.Id, Model.AgentPolicy, StringComparison.OrdinalIgnoreCase))">@agent.DisplayName</option>
@@ -76,7 +76,7 @@
         {
           <label>Execution profile
             <select name="executionProfile">
-              <option value="">Repository default</option>
+              <option value="">@ExecutionPolicyDisplay.RepositoryDefaultExecutionProfile(Model.RepositoryDefaultExecutionProfile)</option>
               @foreach (var profile in Model.EffectiveExecutionProfiles)
               {
                 <option value="@profile" selected="@(string.Equals(profile, Model.ExecutionProfile, StringComparison.OrdinalIgnoreCase))">@profile</option>

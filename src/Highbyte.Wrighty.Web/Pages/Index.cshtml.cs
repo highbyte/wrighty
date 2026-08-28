@@ -30,6 +30,7 @@ public sealed class IndexModel(
     private const int MaximumBodyLength = 1_000_000;
     private const string ArgumentInvalid = "ARGUMENT_INVALID";
     private const string ContextApprovalPartial = "Shared/_ContextApproval";
+    private const string WorkerOverviewPartial = "Shared/_WorkerOverview";
     private const string QueueActionId = "queue";
     private const string DequeueActionId = "dequeue";
     private const string ResumeActionId = "resume";
@@ -88,6 +89,11 @@ public sealed class IndexModel(
         .OrderBy(descriptor => descriptor.Id, StringComparer.OrdinalIgnoreCase)
         .Select(descriptor => new AgentOptionView(descriptor.Id, descriptor.DisplayName))
         .ToArray();
+
+    private IReadOnlyList<string> ExecutionProfileOptions() =>
+        state.Config.EffectiveWorker.EffectiveExecutionProfiles is { Count: > 0 } configuredProfiles
+            ? configuredProfiles
+            : BuiltInExecutionProfiles.Names;
 
     public IReadOnlyList<string> PriorityOptions => state.Config.LocalMarkdown?.Priorities ?? [];
 
@@ -400,12 +406,22 @@ public sealed class IndexModel(
 
     public async Task<IActionResult> OnPostStartHostedWorkerAsync(
         [FromForm] OperationsListInput input,
+        string? surface,
         CancellationToken cancellationToken)
     {
         var result = await hostedWorker.StartAsync();
         Response.Headers["HX-Trigger"] = "wrighty:refresh";
+        if (IsWorkerOverviewSurface(surface))
+        {
+            return Partial(
+                WorkerOverviewPartial,
+                await WorkerOverviewAsync(
+                    cancellationToken,
+                    errorCode: result.Accepted ? null : result.Code,
+                    errorMessage: result.Accepted ? null : result.Message));
+        }
         var feedback = result.Accepted
-            ? new OperationsFeedback(WorkerNotice: result.Message)
+            ? new OperationsFeedback()
             : new OperationsFeedback(
                 WorkerErrorCode: result.Code,
                 WorkerErrorMessage: result.Message);
@@ -418,64 +434,89 @@ public sealed class IndexModel(
     }
 
     public async Task<IActionResult> OnPostStopWorkerAsync(
-        string runId,
-        int processId,
-        string? processStartIdentity,
-        string hostKind,
-        string mode,
+        [FromForm] WorkerStopInput stop,
         [FromForm] OperationsListInput input,
+        string? surface,
         CancellationToken cancellationToken)
     {
-        if (!Enum.TryParse<WorkerHostKind>(hostKind, ignoreCase: true, out var parsedHostKind) ||
-            !Enum.TryParse<WorkerStopMode>(mode, ignoreCase: true, out var parsedMode))
+        if (!Enum.TryParse<WorkerHostKind>(stop.HostKind, ignoreCase: true, out var hostKind) ||
+            !Enum.TryParse<WorkerStopMode>(stop.Mode, ignoreCase: true, out var mode))
         {
-            return Partial(
-                "Shared/_Operations",
-                await OperationsAsync(
-                    cancellationToken,
-                    new OperationsFeedback(
-                        WorkerErrorCode: "ARGUMENT_INVALID",
-                        WorkerErrorMessage: "The worker stop request was invalid."),
-                    OperationsListQuery.Parse(input)));
+            var invalid = new HostedWorkerCommandResult(
+                false,
+                ArgumentInvalid,
+                "The worker stop request was invalid.");
+            return await WorkerStopResponseAsync(
+                invalid, input, surface, null, cancellationToken);
         }
 
-        HostedWorkerCommandResult result;
-        if (parsedHostKind == WorkerHostKind.WebHosted && hostedWorker.Owns(runId))
+        var result = await RequestWorkerStopAsync(stop, hostKind, mode, cancellationToken);
+        return await WorkerStopResponseAsync(
+            result,
+            input,
+            surface,
+            result.Accepted ? stop.RunId : null,
+            cancellationToken);
+    }
+
+    private async Task<HostedWorkerCommandResult> RequestWorkerStopAsync(
+        WorkerStopInput stop,
+        WorkerHostKind hostKind,
+        WorkerStopMode mode,
+        CancellationToken cancellationToken)
+    {
+        if (hostKind == WorkerHostKind.WebHosted && hostedWorker.Owns(stop.RunId))
         {
-            result = parsedMode == WorkerStopMode.Drain
-                ? hostedWorker.RequestDrain(runId)
-                : hostedWorker.RequestInterrupt(runId);
+            return mode == WorkerStopMode.Drain
+                ? hostedWorker.RequestDrain(stop.RunId)
+                : hostedWorker.RequestInterrupt(stop.RunId);
         }
-        else if (state.Config.SourcePath is not { } configurationPath)
+        if (state.Config.SourcePath is not { } configurationPath)
         {
-            result = new HostedWorkerCommandResult(
+            return new HostedWorkerCommandResult(
                 false,
                 "WORKER_CONTROL_UNAVAILABLE",
                 "The repository configuration path is unavailable.");
         }
-        else
-        {
-            var external = await workerInstances.RequestStopAsync(
-                configurationPath,
-                new WorkerStopTarget(
-                    runId,
-                    processId,
-                    processStartIdentity,
-                    parsedHostKind),
-                parsedMode,
-                cancellationToken);
-            result = new HostedWorkerCommandResult(
-                external.Accepted,
-                external.Code,
-                external.Message);
-        }
 
+        var external = await workerInstances.RequestStopAsync(
+            configurationPath,
+            new WorkerStopTarget(
+                stop.RunId,
+                stop.ProcessId,
+                stop.ProcessStartIdentity,
+                hostKind),
+            mode,
+            cancellationToken);
+        return new HostedWorkerCommandResult(
+            external.Accepted,
+            external.Code,
+            external.Message);
+    }
+
+    private async Task<IActionResult> WorkerStopResponseAsync(
+        HostedWorkerCommandResult result,
+        OperationsListInput input,
+        string? surface,
+        string? pendingStopRunId,
+        CancellationToken cancellationToken)
+    {
         var feedback = result.Accepted
-            ? new OperationsFeedback(WorkerNotice: result.Message)
+            ? new OperationsFeedback()
             : new OperationsFeedback(
                 WorkerErrorCode: result.Code,
                 WorkerErrorMessage: result.Message);
         Response.Headers["HX-Trigger"] = "wrighty:refresh";
+        if (IsWorkerOverviewSurface(surface))
+        {
+            return Partial(
+                WorkerOverviewPartial,
+                await WorkerOverviewAsync(
+                    cancellationToken,
+                    errorCode: result.Accepted ? null : result.Code,
+                    errorMessage: result.Accepted ? null : result.Message,
+                    pendingStopRunId: pendingStopRunId));
+        }
         return Partial(
             "Shared/_Operations",
             await OperationsAsync(
@@ -1253,7 +1294,6 @@ public sealed class IndexModel(
                 .ToArray(),
             AvailablePriorities: itemsResult.PriorityOptions,
             AvailableWorkflowStatuses: itemsResult.WorkflowStatusOptions,
-            WorkerNotice: feedback.WorkerNotice,
             WorkerErrorCode: feedback.WorkerErrorCode,
             WorkerErrorMessage: feedback.WorkerErrorMessage);
     }
@@ -1338,6 +1378,23 @@ public sealed class IndexModel(
             return [];
         }
     }
+
+    private async Task<WorkerOverviewPageModel> WorkerOverviewAsync(
+        CancellationToken cancellationToken,
+        string? errorCode = null,
+        string? errorMessage = null,
+        string? pendingStopRunId = null) =>
+        new(
+            state.LocalHostName,
+            await LoadWorkersAsync(cancellationToken),
+            hostedWorker.Snapshots(),
+            hostedWorker.Available,
+            errorCode,
+            errorMessage,
+            pendingStopRunId);
+
+    private static bool IsWorkerOverviewSurface(string? surface) =>
+        string.Equals(surface, "overview", StringComparison.OrdinalIgnoreCase);
 
     private async Task<ContextApprovalView> ContextApprovalAsync(
         OperationsFeedback feedback,
@@ -1484,21 +1541,20 @@ public sealed class IndexModel(
             return [];
         }
 
-        var catalogs = new List<Workers.AgentModelCatalog>();
-        foreach (var agent in adaptersByName.Keys.OrderBy(name => name, StringComparer.OrdinalIgnoreCase))
-        {
-            try
+        return await Task.WhenAll(adaptersByName.Keys
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .Select(async agent =>
             {
-                catalogs.Add(await modelDiscoveries.DiscoverAsync(agent, cancellationToken));
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                catalogs.Add(Workers.AgentModelCatalog.Unavailable(
-                    agent, Workers.ModelDiscoveryFailure.Unavailable));
-            }
-        }
-
-        return catalogs;
+                try
+                {
+                    return await modelDiscoveries.DiscoverAsync(agent, cancellationToken);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    return Workers.AgentModelCatalog.Unavailable(
+                        agent, Workers.ModelDiscoveryFailure.Unavailable);
+                }
+            }));
     }
 
     private async Task<OperationalItemsLoadResult> LoadOperationalItemsAsync(
@@ -1887,7 +1943,6 @@ public sealed class IndexModel(
         string? ContextErrorMessage = null,
         ExecutionContextResult? ContextResult = null,
         bool ContextRenewed = false,
-        string? WorkerNotice = null,
         string? WorkerErrorCode = null,
         string? WorkerErrorMessage = null);
 
@@ -2023,6 +2078,19 @@ public sealed class IndexModel(
 
         Response.Headers.ETag = etag;
         return Partial("Shared/_WorkerSummary", summary);
+    }
+
+    public async Task<IActionResult> OnGetWorkerOverviewAsync(
+        CancellationToken cancellationToken)
+    {
+        var overview = await WorkerOverviewAsync(cancellationToken);
+        var etag = $"\"{overview.Revision}\"";
+        if (Request.Headers.IfNoneMatch.Any(value =>
+                string.Equals(value, etag, StringComparison.Ordinal)))
+            return StatusCode(StatusCodes.Status204NoContent);
+
+        Response.Headers.ETag = etag;
+        return Partial(WorkerOverviewPartial, overview);
     }
 
     public async Task<IActionResult> OnGetItemAsync(string id, CancellationToken cancellationToken)
@@ -2172,11 +2240,15 @@ public sealed class IndexModel(
             null,
             false,
             null,
+            null,
             CreationAttempt.NormalizeOrCreate(null),
             creationStatuses,
             local.Priorities,
             state.Config.EffectiveWorker.UseWorkerQueue,
             state.Config.DefaultPickFrom,
+            RepositoryDefaultAgentLabel(),
+            state.Config.EffectiveWorker.DefaultExecutionProfile,
+            ExecutionProfileOptions(),
             AvailableAgents: AgentPolicyOptions()));
     }
 
@@ -2187,6 +2259,7 @@ public sealed class IndexModel(
         string? priority,
         bool automaticExecutionAllowed,
         string? agentPolicy,
+        string? executionProfile,
         string creationAttemptId,
         CancellationToken cancellationToken)
     {
@@ -2210,11 +2283,15 @@ public sealed class IndexModel(
             string.IsNullOrWhiteSpace(priority) ? null : priority,
             effectiveAutomaticExecutionAllowed,
             string.IsNullOrWhiteSpace(agentPolicy) ? null : agentPolicy,
+            string.IsNullOrWhiteSpace(executionProfile) ? null : executionProfile,
             creationAttemptId,
             creationStatuses,
             local.Priorities,
             queueAuthorizesExecution,
             state.Config.DefaultPickFrom,
+            RepositoryDefaultAgentLabel(),
+            state.Config.EffectiveWorker.DefaultExecutionProfile,
+            ExecutionProfileOptions(),
             AvailableAgents: AgentPolicyOptions());
 
         if (body.Length > MaximumBodyLength)
@@ -2237,7 +2314,8 @@ public sealed class IndexModel(
                     status,
                     draft.Priority,
                     AutomaticExecutionAllowed: effectiveAutomaticExecutionAllowed,
-                    AgentPolicy: draft.AgentPolicy),
+                    AgentPolicy: draft.AgentPolicy,
+                    ExecutionProfile: draft.ExecutionProfile),
                 creationAttemptId,
                 cancellationToken);
             return ClosePanelAndRefresh();
@@ -4305,7 +4383,9 @@ public sealed class IndexModel(
                 workspaceView),
             CanDelete: canDelete,
             ExecutionProfile: item.ExecutionProfile,
-            ExecutionProfiles: state.Config.Worker?.EffectiveExecutionProfiles ?? [],
+            ExecutionProfiles: ExecutionProfileOptions(),
+            RepositoryDefaultAgentLabel: RepositoryDefaultAgentLabel(),
+            RepositoryDefaultExecutionProfile: state.Config.EffectiveWorker.DefaultExecutionProfile,
             CreatedAt: item.CreatedAt,
             UpdatedAt: item.UpdatedAt,
             QueueAuthorizesExecution: state.Config.EffectiveWorker.UseWorkerQueue,
@@ -5245,6 +5325,14 @@ public sealed class IndexModel(
         return string.IsNullOrWhiteSpace(value)
             ? null
             : value.Trim().ToLowerInvariant();
+    }
+
+    private string? RepositoryDefaultAgentLabel()
+    {
+        var defaultAgent = state.Config.EffectiveWorker.DefaultAgent;
+        return string.IsNullOrWhiteSpace(defaultAgent)
+            ? null
+            : AgentDisplayName(defaultAgent);
     }
 
     private HashSet<string> InstalledProbeAgents() =>

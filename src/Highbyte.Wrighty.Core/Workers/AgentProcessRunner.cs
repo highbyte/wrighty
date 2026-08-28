@@ -5,6 +5,10 @@ using Highbyte.Wrighty.Processes;
 
 namespace Highbyte.Wrighty.Workers;
 
+public sealed record AgentProcessCallbacks(
+    Func<CancellationToken, Task>? ProcessStarted = null,
+    Func<string, CancellationToken, Task>? SessionStarted = null);
+
 public interface IAgentProcessRunner
 {
     Task<AgentRunResult> RunAsync(
@@ -15,16 +19,39 @@ public interface IAgentProcessRunner
         Func<string, CancellationToken, Task>? sessionStarted,
         bool killOnCancellation,
         CancellationToken cancellationToken);
+
+    Task<AgentRunResult> RunWithCallbacksAsync(
+        AgentInvocation invocation,
+        IAgentAdapter adapter,
+        TimeSpan timeout,
+        IReadOnlyDictionary<string, string> grantEnvironment,
+        AgentProcessCallbacks callbacks,
+        bool killOnCancellation,
+        CancellationToken cancellationToken) =>
+        RunAsync(invocation, adapter, timeout, grantEnvironment, callbacks.SessionStarted,
+            killOnCancellation, cancellationToken);
 }
 
 public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgentProcessRunner
 {
-    public async Task<AgentRunResult> RunAsync(
+    public Task<AgentRunResult> RunAsync(
         AgentInvocation invocation,
         IAgentAdapter adapter,
         TimeSpan timeout,
         IReadOnlyDictionary<string, string> grantEnvironment,
         Func<string, CancellationToken, Task>? sessionStarted,
+        bool killOnCancellation,
+        CancellationToken cancellationToken) =>
+        RunWithCallbacksAsync(invocation, adapter, timeout, grantEnvironment,
+            new AgentProcessCallbacks(SessionStarted: sessionStarted),
+            killOnCancellation, cancellationToken);
+
+    public async Task<AgentRunResult> RunWithCallbacksAsync(
+        AgentInvocation invocation,
+        IAgentAdapter adapter,
+        TimeSpan timeout,
+        IReadOnlyDictionary<string, string> grantEnvironment,
+        AgentProcessCallbacks callbacks,
         bool killOnCancellation,
         CancellationToken cancellationToken)
     {
@@ -32,6 +59,19 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
             throw new TrackerException("ARGUMENT_INVALID", "--item-timeout must be positive.", 2);
 
         using var process = StartProcess(invocation, grantEnvironment);
+        if (callbacks.ProcessStarted is not null)
+        {
+            try
+            {
+                await callbacks.ProcessStarted(cancellationToken);
+            }
+            catch
+            {
+                Kill(process);
+                await process.WaitForExitAsync(CancellationToken.None);
+                throw;
+            }
+        }
 
         // The prompt goes here when there is one: an approved context on the command line would be
         // readable by every process on the machine, and would appear in the argument list worker
@@ -54,7 +94,7 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
         };
         var capture = new SessionCapture();
         var stdoutTask = CaptureStdoutAsync(
-            process, writer, adapter, capture, sessionStarted, cancellationToken);
+            process, writer, adapter, capture, callbacks.SessionStarted, cancellationToken);
 
         using var timeoutCts = new CancellationTokenSource(timeout);
         using var combined = CancellationTokenSource.CreateLinkedTokenSource(

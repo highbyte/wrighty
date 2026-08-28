@@ -67,11 +67,18 @@
       }
     </aside>
   }
+  else if (Model.OperationalStatus == OperationalStatuses.WorkerPreparing)
+  {
+    <output class="worker-state-callout worker-preparing" aria-label="Worker preparing status">
+      <strong>Worker preparing</strong>
+      <span>The worker owns this item while it prepares the workspace and validates launch policy. No agent process has started yet.</span>
+    </output>
+  }
   else if (Model.OperationalStatus == OperationalStatuses.AgentActive)
   {
     <aside class="worker-state-callout agent-active" role="status">
-      <strong>@(Model.AgentLabel ?? "Agent") active</strong>
-      <span>The agent claim is active. Claim state does not guarantee that the operating-system process is still alive.</span>
+      <strong>@(Model.AgentLabel ?? "Agent") working</strong>
+      <span>The worker successfully started the agent process and is maintaining its claim.</span>
     </aside>
   }
   else if (Model.OperationalStatus == OperationalStatuses.Completed)
@@ -205,7 +212,8 @@
     <h3>Execution policy</h3>
     <dl class="metadata">
       <div><dt>Automatic execution</dt><dd>@(Model.AutomaticExecutionAllowed ? "Allowed" : "Manual only")</dd></div>
-      <div><dt>Agent</dt><dd>@(Model.AgentPolicy is null ? "Repository default" : char.ToUpperInvariant(Model.AgentPolicy[0]) + Model.AgentPolicy[1..])</dd></div>
+      <div><dt>Agent</dt><dd>@Model.AgentPolicyDisplay</dd></div>
+      <div><dt>Execution profile</dt><dd>@Model.ExecutionProfileDisplay</dd></div>
     </dl>
   </section>
   <section class="metadata-group">

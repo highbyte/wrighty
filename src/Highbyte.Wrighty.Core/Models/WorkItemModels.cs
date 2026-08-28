@@ -200,7 +200,8 @@ public sealed record WorkItemClaimSummary(
     string ClaimantKind = "unknown",
     string? ClaimantId = null,
     bool TakeoverAvailable = false,
-    string? WorkspacePath = null)
+    string? WorkspacePath = null,
+    string? ExecutionPhase = null)
 {
     public static WorkItemClaimSummary FromOwnership(ClaimOwnershipResult ownership) => new(
         ownership.State,
@@ -211,7 +212,8 @@ public sealed record WorkItemClaimSummary(
         ownership.ClaimantKind,
         ownership.ClaimantId,
         ownership.TakeoverAvailable,
-        ownership.WorkspacePath);
+        ownership.WorkspacePath,
+        ownership.ExecutionPhase);
 }
 
 public sealed record DashboardWorkItem(
@@ -387,6 +389,7 @@ public static class OperationalStatuses
     public const string Queued = "queued";
     public const string RetryScheduled = "retry-scheduled";
     public const string HandoffQueued = "handoff-queued";
+    public const string WorkerPreparing = "worker-preparing";
     public const string AgentActive = "agent-active";
     public const string HumanEditing = "human-editing";
     public const string AutomationActive = "automation-active";
@@ -438,7 +441,11 @@ public static class OperationalStatuses
 
         if (claim.State != ClaimOwnershipState.Unclaimed)
         {
-            return ClaimantKinds.FromStorageValue(claim.ClaimantKind) switch
+            var claimantKind = ClaimantKinds.FromStorageValue(claim.ClaimantKind);
+            if (claimantKind == ClaimantKind.Agent &&
+                claim.ExecutionPhase == ClaimExecutionPhases.Preparing)
+                return WorkerPreparing;
+            return claimantKind switch
             {
                 ClaimantKind.Agent => AgentActive,
                 ClaimantKind.Human => HumanEditing,

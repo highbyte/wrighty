@@ -103,8 +103,10 @@ wrighty edit <id> --profile economy --claimant-id <id> --claim-token <token>
 wrighty edit <id> --clear-profile --claimant-id <id> --claim-token <token>
 ```
 
-On the web console the item editor offers **Execution profile** beside **Agent policy**,
-whenever the repository configures a vocabulary.
+On the web console the create and edit item forms offer **Execution profile** beside **Agent policy**.
+They show the repository vocabulary when configured, or the built-in `economy`, `balanced`, and
+`deep` names otherwise. The repository-default option includes the configured default profile name
+when one exists, or says `vendor defaults` when Wrighty will pass no model or effort override.
 
 **Resolution fails closed.** A profile that resolves to nothing usable is an error
 (`AGENT_PROFILE_UNAVAILABLE`), never a quiet fallback. Wrighty does not drop to a cheaper profile to

@@ -51,14 +51,23 @@
       }
       <label>Agent policy
         <select name="agentPolicy">
-          <option value="">Repository default</option>
+          <option value="">@ExecutionPolicyDisplay.RepositoryDefault(Model.RepositoryDefaultAgentLabel)</option>
           @foreach (var agent in Model.AgentOptions)
           {
             <option value="@agent.Id" selected="@(agent.Id == Model.AgentPolicy)">@agent.DisplayName</option>
           }
         </select>
       </label>
-      <p class="form-help">Creation does not claim the item or start a worker. The agent policy only selects an agent once automatic execution is authorized.</p>
+      <label>Execution profile
+        <select name="executionProfile">
+          <option value="">@ExecutionPolicyDisplay.RepositoryDefaultExecutionProfile(Model.RepositoryDefaultExecutionProfile)</option>
+          @foreach (var profile in Model.ExecutionProfiles)
+          {
+            <option value="@profile" selected="@(profile == Model.ExecutionProfile)">@profile</option>
+          }
+        </select>
+      </label>
+      <p class="form-help">Creation does not claim the item or start a worker. Agent and execution-profile policies apply once automatic execution is authorized.</p>
     </fieldset>
     <div class="actions"><button type="submit" class="primary">Create item</button></div>
   </form>

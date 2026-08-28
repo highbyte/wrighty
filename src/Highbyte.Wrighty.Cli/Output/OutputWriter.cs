@@ -27,6 +27,7 @@ public sealed class OutputWriter(
     TextWriter error,
     Func<DateTimeOffset>? clock = null)
 {
+    private const string AgentFallback = "agent";
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
     private static readonly string[] PartialErrorDetailKeys =
@@ -148,7 +149,8 @@ public sealed class OutputWriter(
         var completed = Group(items, OperationalStatuses.Completed);
         var paused = Group(items, OperationalStatuses.PausedSession);
         var active = items.Where(value => value.OperationalStatus
-            is OperationalStatuses.AgentActive
+            is OperationalStatuses.WorkerPreparing
+            or OperationalStatuses.AgentActive
             or OperationalStatuses.HumanEditing
             or OperationalStatuses.AutomationActive).ToArray();
         var queued = Group(items, OperationalStatuses.Queued);
@@ -1730,16 +1732,18 @@ public sealed class OutputWriter(
     private string OperationalStatusToken(WorkItemOperationalState value) => value.OperationalStatus switch
     {
         OperationalStatuses.NeedsAttention => "!attention",
+        OperationalStatuses.WorkerPreparing =>
+            $"preparing:{value.Claim.Agent ?? AgentFallback}",
         OperationalStatuses.AgentActive when IsWorkerRunClaim(value) =>
-            $"processing:{value.Claim.Agent ?? "agent"}",
-        OperationalStatuses.AgentActive => $"claimed:{value.Claim.Agent ?? "agent"}",
-        OperationalStatuses.Queued => $"queued:{value.Session?.Agent ?? "agent"}",
+            $"processing:{value.Claim.Agent ?? AgentFallback}",
+        OperationalStatuses.AgentActive => $"claimed:{value.Claim.Agent ?? AgentFallback}",
+        OperationalStatuses.Queued => $"queued:{value.Session?.Agent ?? AgentFallback}",
         OperationalStatuses.RetryScheduled => value.Session?.Dispatch is { } dispatch
             ? $"retry:{dispatch.NotBefore.ToLocalTime():HH:mm}"
             : "retry",
         OperationalStatuses.HandoffQueued =>
-            $"handoff:{value.Session?.Dispatch?.Agent ?? "agent"}",
-        OperationalStatuses.PausedSession => $"paused:{value.Session?.Agent ?? "agent"}",
+            $"handoff:{value.Session?.Dispatch?.Agent ?? AgentFallback}",
+        OperationalStatuses.PausedSession => $"paused:{value.Session?.Agent ?? AgentFallback}",
         OperationalStatuses.Completed => "completed",
         OperationalStatuses.HumanEditing => "human",
         OperationalStatuses.AutomationActive => "automation",
@@ -1750,6 +1754,7 @@ public sealed class OutputWriter(
     private string OperationalStatusLabel(WorkItemOperationalState value) => value.OperationalStatus switch
     {
         OperationalStatuses.NeedsAttention => "Needs attention",
+        OperationalStatuses.WorkerPreparing => "Worker preparing",
         OperationalStatuses.AgentActive when IsWorkerRunClaim(value) =>
             $"{AgentLabel(value.Claim.Agent) ?? "Agent"} processing",
         OperationalStatuses.AgentActive => $"{AgentLabel(value.Claim.Agent) ?? "Agent"} claimed",
@@ -1759,7 +1764,7 @@ public sealed class OutputWriter(
             : "Retry scheduled",
         OperationalStatuses.HandoffQueued => value.Session?.Dispatch is { } dispatch
             ? $"{AgentLabel(dispatch.SessionAgent) ?? "Agent"} → " +
-              $"{AgentLabel(dispatch.Agent) ?? "agent"}"
+              $"{AgentLabel(dispatch.Agent) ?? AgentFallback}"
             : "Handoff queued",
         OperationalStatuses.PausedSession => "Session retained",
         OperationalStatuses.Completed => "Completed",
@@ -1892,6 +1897,7 @@ public sealed class OutputWriter(
                 claimantId = claimView?.ClaimantId,
                 sessionId = claimView?.SessionId,
                 workspacePath = claimView?.WorkspacePath,
+                executionPhase = claimView?.ExecutionPhase,
                 workerRun = IsWorkerRunClaim(value),
                 leaseRemainingSeconds = LeaseRemainingSeconds(value.Claim),
                 value.Claim.TakeoverAvailable

@@ -87,6 +87,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("id=\"provider-capacity-region\"", shell);
         Assert.DoesNotContain("id=\"skill-status-region\"", shell);
         Assert.Contains("id=\"worker-summary-region\"", shell);
+        Assert.DoesNotContain("worker-overview-dialog", shell);
         // The page-level tabs: every section is discoverable without scrolling, board first for
         // the local backend.
         Assert.Contains("role=\"tablist\"", shell);
@@ -140,8 +141,13 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("Attention required", html);
         Assert.Contains("activity-needs-attention", html);
         Assert.Contains("Needs attention", html);
+        Assert.Contains("activity-worker-preparing", html);
+        Assert.Contains("Worker preparing", html);
         Assert.Contains("activity-agent-active", html);
-        Assert.Contains("Claude active", html);
+        Assert.Contains("Copilot working", html);
+        Assert.Contains("class=\"agent-working-banner\"", html);
+        Assert.Contains("class=\"agent-working-live\">Live", html);
+        Assert.Contains("class=\"agent-working-label\">Copilot working", html);
         Assert.Contains("class=\"column-count has-tooltip\"", html);
         Assert.Contains("data-visible-count", html);
         Assert.Contains("data-total-count=", html);
@@ -201,8 +207,30 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("id=\"worker-summary-button\"", workerSummaryHtml);
         Assert.Contains(">Workers</span>", workerSummaryHtml);
         Assert.Contains("<strong>0</strong>", workerSummaryHtml);
-        Assert.Contains("data-open-worker-processes", workerSummaryHtml);
+        Assert.Contains("<details class=\"worker-menu\">", workerSummaryHtml);
+        Assert.Contains("class=\"worker-overview-popover\"", workerSummaryHtml);
+        Assert.Contains("id=\"worker-overview-content\"", workerSummaryHtml);
+        Assert.Contains("handler=WorkerOverview", workerSummaryHtml);
         Assert.NotNull(workerSummary.Headers.ETag);
+
+        using var workerOverviewRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=WorkerOverview");
+        using var workerOverview = await client.SendAsync(workerOverviewRequest);
+        var workerOverviewHtml = await workerOverview.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, workerOverview.StatusCode);
+        Assert.Contains("id=\"worker-overview-heading\"", workerOverviewHtml);
+        Assert.Contains("Workers on this installation", workerOverviewHtml);
+        Assert.Contains("No workers are running", workerOverviewHtml);
+        Assert.Contains("data-worker-overview-revision=", workerOverviewHtml);
+        Assert.NotNull(workerOverview.Headers.ETag);
+
+        using var unchangedWorkerOverviewRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=WorkerOverview");
+        unchangedWorkerOverviewRequest.Headers.IfNoneMatch.Add(workerOverview.Headers.ETag);
+        using var unchangedWorkerOverview = await client.SendAsync(unchangedWorkerOverviewRequest);
+        Assert.Equal(HttpStatusCode.NoContent, unchangedWorkerOverview.StatusCode);
 
         using var unchangedWorkerSummaryRequest = AuthenticatedGet(
             host,
@@ -643,10 +671,23 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 client,
                 host,
                 "StartHostedWorker",
-                []);
-            var html = await response.Content.ReadAsStringAsync();
+                new Dictionary<string, string> { ["surface"] = "overview" });
+            var overviewHtml = await response.Content.ReadAsStringAsync();
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Contains("Workers on this installation", overviewHtml);
+            Assert.Contains("This web console", overviewHtml);
+            Assert.Contains("id=\"start-worker-from-overview\"", overviewHtml);
+            Assert.Contains("class=\"primary button-compact\"", overviewHtml);
+            Assert.Contains("data-worker-details-run-id=", overviewHtml);
+            Assert.Contains(">Stop</button>", overviewHtml);
+            Assert.Contains("name=\"surface\" value=\"overview\"", overviewHtml);
+            Assert.DoesNotContain("worker-overview-notice", overviewHtml);
+
+            using var operationsRequest = AuthenticatedGet(
+                host,
+                $"{host.Origin}/?handler=Operations");
+            var html = await (await client.SendAsync(operationsRequest)).Content.ReadAsStringAsync();
             var origin = html.IndexOf("Hosted by this web console", StringComparison.Ordinal);
             Assert.True(origin >= 0, html);
             var cardStart = html.LastIndexOf("<article", origin, StringComparison.Ordinal);
@@ -662,6 +703,24 @@ public sealed partial class WrightyWebServerTests : IDisposable
             Assert.Contains("title=\"Shows the latest 200 lifecycle events;", html);
             Assert.DoesNotContain("Hosted worker operational log ·", html);
             Assert.DoesNotContain("class=\"hosted-log-safety\"", html);
+
+            var stopResponse = await PostForm(
+                client,
+                host,
+                "StopWorker",
+                new Dictionary<string, string>
+                {
+                    ["surface"] = "overview",
+                    ["runId"] = HiddenValue(overviewHtml, "runId"),
+                    ["processId"] = HiddenValue(overviewHtml, "processId"),
+                    ["processStartIdentity"] = HiddenValue(overviewHtml, "processStartIdentity"),
+                    ["hostKind"] = HiddenValue(overviewHtml, "hostKind"),
+                    ["mode"] = "Drain"
+                });
+            var stoppedOverviewHtml = await stopResponse.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, stopResponse.StatusCode);
+            Assert.DoesNotContain("worker-overview-notice", stoppedOverviewHtml);
         }
         finally
         {
@@ -929,10 +988,23 @@ public sealed partial class WrightyWebServerTests : IDisposable
             "id=\"configuration-profiles-form\" class=\"configuration-form-wide\"",
             html);
         Assert.Contains("Repository profile names", html);
+        Assert.Contains(">No repository default</option>", html);
+        Assert.Contains("title=\"Explain the default agent\"", html);
+        Assert.Contains("An item Agent policy or an invocation <code>--agent</code> option must select the agent", html);
+        Assert.Contains("Used as the fallback when neither the invocation nor the item selects an agent", html);
+        Assert.DoesNotContain("Item or invocation policy", html);
         Assert.Contains("data-token-label=\"profile\"", html);
         Assert.Contains("data-allow-create=\"true\"", html);
         Assert.Contains("<select id=\"configuration-default-execution-profile\"", html);
         Assert.Contains("Shared policy", html);
+        Assert.Contains("User settings can", html);
+        Assert.Contains("override what each name means for each agent on this computer", html);
+        Assert.Contains("By default, the available profile", html);
+        Assert.Contains("names are <code>economy</code>, <code>balanced</code>, and <code>deep</code>", html);
+        Assert.Contains("those built-ins remain available when explicitly requested, but no profile is", html);
+        Assert.Contains("applied automatically", html);
+        Assert.Contains("vendor-default model with low, medium, and high", html);
+        Assert.Contains("effort respectively", html);
         Assert.Matches(
             "class=\"muted configuration-help\">\\s*Shared policy",
             html);
@@ -965,6 +1037,31 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("<input", freeText);
         Assert.DoesNotContain("<select", freeText);
         await host.Stop();
+    }
+
+    [Fact]
+    public async Task Settings_starts_agent_model_discoveries_concurrently()
+    {
+        var release = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var claude = new CoordinatedModelDiscovery("claude", release.Task);
+        var codex = new CoordinatedModelDiscovery("codex", release.Task);
+        var host = await StartServer(
+            openBrowser: false,
+            modelDiscoveries: new AgentModelDiscoveries([claude, codex]));
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Settings");
+
+        var responseTask = client.SendAsync(request);
+        var bothStarted = Task.WhenAll(claude.Started, codex.Started);
+        var observed = await Task.WhenAny(bothStarted, Task.Delay(TimeSpan.FromSeconds(2)));
+        var startedConcurrently = ReferenceEquals(observed, bothStarted);
+        release.TrySetResult(true);
+        using var response = await responseTask;
+        await host.Stop();
+
+        Assert.True(startedConcurrently, "Model discoveries did not all start before the first completed.");
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
     [Fact]
@@ -1689,6 +1786,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("unsafe: <script>", html);
         Assert.Contains("<dt>Claimant type</dt><dd>Agent</dd>", html);
         Assert.Contains("<dt>Agent</dt><dd>Codex</dd>", html);
+        Assert.Contains(
+            "<dt>Execution profile</dt><dd>Repository default (vendor defaults)</dd>",
+            html);
         Assert.Contains("Codex has paused and its headless process has exited.", html);
         Assert.Contains(">Queue for worker</button>", html);
         Assert.DoesNotContain("Takeover does not stop that process", html);
@@ -1793,8 +1893,15 @@ public sealed partial class WrightyWebServerTests : IDisposable
             form);
         Assert.Contains("Controlled by status.", form);
         Assert.Contains("Worker queue", form);
+        Assert.Contains("name=\"executionProfile\"", form);
         Assert.Contains(
-            "The agent policy only selects an agent once automatic execution is authorized.",
+            "<option value=\"\">Repository default (vendor defaults)</option>",
+            form);
+        Assert.Contains(">economy</option>", form);
+        Assert.Contains(">balanced</option>", form);
+        Assert.Contains(">deep</option>", form);
+        Assert.Contains(
+            "Agent and execution-profile policies apply once automatic execution is authorized.",
             form);
         var attempt = HiddenValue(form, "creationAttemptId");
         var before = Directory.GetFiles(
@@ -1808,6 +1915,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
             ["status"] = "Todo",
             ["priority"] = "P2",
             ["agentPolicy"] = "codex",
+            ["executionProfile"] = "deep",
             ["creationAttemptId"] = attempt
         };
         using var first = await PostForm(client, host, "Create", new(values));
@@ -1826,7 +1934,29 @@ public sealed partial class WrightyWebServerTests : IDisposable
             Directory.GetFiles(
                 Path.Combine(directory, ".wrighty", "items"),
                 "*.md").Length);
+        var document = await File.ReadAllTextAsync(Assert.Single(Directory.GetFiles(
+            Path.Combine(directory, ".wrighty", "items"),
+            "*-created-from-web.md")));
+        Assert.Contains("profile: deep", document);
 
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Create_form_describes_the_configured_repository_defaults()
+    {
+        var host = await StartServer(workerConfig: new WorkerConfig
+        {
+            DefaultAgent = "claude",
+            ExecutionProfiles = ["economy", "balanced", "deep"],
+            DefaultExecutionProfile = "balanced"
+        });
+        using var client = new HttpClient();
+        using var request = AuthenticatedGet(host, $"{host.Origin}/?handler=Create");
+        var html = await (await client.SendAsync(request)).Content.ReadAsStringAsync();
+
+        Assert.Contains("<option value=\"\">Repository default (Claude)</option>", html);
+        Assert.Contains("<option value=\"\">Repository default (balanced)</option>", html);
         await host.Stop();
     }
 
@@ -4463,10 +4593,11 @@ public sealed partial class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Edit_form_offers_the_execution_profile_only_when_the_repository_configures_one()
+    public async Task Edit_form_offers_the_repository_execution_profiles()
     {
         var host = await StartServer(workerConfig: new WorkerConfig
         {
+            DefaultAgent = "claude",
             ExecutionProfiles = ["economy", "balanced", "deep"],
             DefaultExecutionProfile = "balanced"
         });
@@ -4474,8 +4605,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
         using var claimResponse = await PostForm(client, host, "Claim", new() { ["id"] = "local:3" });
         var claimHtml = await claimResponse.Content.ReadAsStringAsync();
         Assert.Contains("name=\"executionProfile\"", claimHtml);
+        Assert.Contains("<option value=\"\">Repository default (Claude)</option>", claimHtml);
         Assert.Contains(">deep</option>", claimHtml);
-        Assert.Contains("Repository default", claimHtml);
+        Assert.Contains("<option value=\"\">Repository default (balanced)</option>", claimHtml);
 
         using var saveResponse = await PostForm(client, host, "Save", new()
         {
@@ -4498,15 +4630,87 @@ public sealed partial class WrightyWebServerTests : IDisposable
     }
 
     [Fact]
-    public async Task Edit_form_hides_the_execution_profile_when_no_profiles_are_configured()
+    public async Task Item_viewer_displays_explicit_and_repository_default_execution_policies()
     {
-        // A repository that does not use profiles must see no new control at all.
+        var host = await StartServer(workerConfig: new WorkerConfig
+        {
+            DefaultAgent = "claude",
+            ExecutionProfiles = ["economy", "balanced", "deep"],
+            DefaultExecutionProfile = "balanced"
+        });
+        using var client = new HttpClient();
+        using var itemRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=Item&id=local%3A3");
+        var inheritedHtml = await (await client.SendAsync(itemRequest)).Content.ReadAsStringAsync();
+
+        Assert.Contains("<dt>Agent</dt><dd>Repository default (Claude)</dd>", inheritedHtml);
+        Assert.Contains(
+            "<dt>Execution profile</dt><dd>Repository default (balanced)</dd>",
+            inheritedHtml);
+
+        using var claimResponse = await PostForm(
+            client,
+            host,
+            "Claim",
+            new() { ["id"] = "local:3" });
+        var claimHtml = await claimResponse.Content.ReadAsStringAsync();
+        using var saveResponse = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:3",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Explicit policy item",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["priority"] = "P3",
+            ["agentPolicy"] = "codex",
+            ["executionProfile"] = "deep",
+            ["action"] = "save"
+        });
+        var explicitHtml = await saveResponse.Content.ReadAsStringAsync();
+
+        Assert.Equal(HttpStatusCode.OK, saveResponse.StatusCode);
+        Assert.Contains("<dt>Agent</dt><dd>Codex</dd>", explicitHtml);
+        Assert.Contains("<dt>Execution profile</dt><dd>deep</dd>", explicitHtml);
+        await host.Stop();
+    }
+
+    [Fact]
+    public async Task Edit_form_offers_the_built_in_execution_profiles_when_none_are_configured()
+    {
+        // The runtime recognizes the shipped vocabulary when the repository has not replaced it,
+        // so the web editor must expose the same zero-configuration choices.
         var host = await StartServer();
         using var client = new HttpClient();
         using var claimResponse = await PostForm(client, host, "Claim", new() { ["id"] = "local:3" });
         var claimHtml = await claimResponse.Content.ReadAsStringAsync();
 
-        Assert.DoesNotContain("name=\"executionProfile\"", claimHtml);
+        Assert.Contains("name=\"executionProfile\"", claimHtml);
+        Assert.Contains(
+            "<option value=\"\">Repository default (vendor defaults)</option>",
+            claimHtml);
+        Assert.Contains(">economy</option>", claimHtml);
+        Assert.Contains(">balanced</option>", claimHtml);
+        Assert.Contains(">deep</option>", claimHtml);
+
+        using var saveResponse = await PostForm(client, host, "Save", new()
+        {
+            ["id"] = "local:3",
+            ["expectedRevision"] = HiddenValue(claimHtml, "expectedRevision"),
+            ["expectedClaimGeneration"] = HiddenValue(claimHtml, "expectedClaimGeneration"),
+            ["title"] = "Built-in profile item",
+            ["body"] = "Body",
+            ["status"] = "Todo",
+            ["priority"] = "P3",
+            ["executionProfile"] = "deep",
+            ["action"] = "save"
+        });
+
+        Assert.Equal(HttpStatusCode.OK, saveResponse.StatusCode);
+        var document = await File.ReadAllTextAsync(
+            Path.Combine(directory, ".wrighty", "items", "003-built-in-profile-item.md"));
+        Assert.Contains("profile: deep", document);
         await host.Stop();
     }
 
@@ -5805,6 +6009,13 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains(".request-button.htmx-request .request-button-progress { visibility: visible; }", stylesheet);
         Assert.Contains(".request-button:disabled { opacity: .72; cursor: wait; }", stylesheet);
         Assert.Contains("@keyframes request-button-spin", stylesheet);
+        Assert.Contains(".card.activity-worker-preparing", stylesheet);
+        Assert.Contains(".card.activity-agent-active", stylesheet);
+        Assert.Contains(".agent-working-banner", stylesheet);
+        Assert.Contains(".agent-working-live", stylesheet);
+        Assert.Contains("@media (prefers-reduced-motion: no-preference)", stylesheet);
+        Assert.Contains("@keyframes agent-working-pulse", stylesheet);
+        Assert.Contains("@keyframes agent-working-rail", stylesheet);
         Assert.Contains(
             ".worker-row.worker-stale { border: 1px solid var(--line); background: transparent; }",
             stylesheet);
@@ -5925,7 +6136,11 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("function refreshAgents()", applicationScript);
         Assert.DoesNotContain("function refreshProviderCapacity()", applicationScript);
         Assert.Contains("function refreshWorkerSummary()", applicationScript);
-        Assert.Contains("function openWorkerProcesses()", applicationScript);
+        Assert.Contains("function refreshWorkerOverview()", applicationScript);
+        Assert.Contains("workerMenuOpen = menu.open", applicationScript);
+        Assert.Contains("wrighty:worker-overview-open", applicationScript);
+        Assert.Contains("function focusWorkerForDetails(runId)", applicationScript);
+        Assert.Contains("function openWorkerProcesses(runId = null)", applicationScript);
         Assert.Contains("handler=WorkerSummary", applicationScript);
         Assert.Contains("refreshVisibleOperations(document);", applicationScript);
         Assert.Contains("setInterval(refreshDashboard, 2000)", applicationScript);
@@ -6475,7 +6690,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
         AgentRegistry? agentRegistry = null,
         IWebSkillMaintenance? skillMaintenance = null,
         IAgentRuntimeCatalog? agentRuntimeCatalog = null,
-        IProviderCapacityProbeService? providerProbeService = null)
+        IProviderCapacityProbeService? providerProbeService = null,
+        AgentModelDiscoveries? modelDiscoveries = null)
     {
         Directory.CreateDirectory(directory);
         var config = new TrackerConfig
@@ -6654,7 +6870,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 "claude",
                 "other-session",
                 AgentContextSource.ExplicitOption,
-                ClaimantKind: ClaimantKind.Agent),
+                ClaimantKind: ClaimantKind.Agent,
+                ExecutionPhase: ClaimExecutionPhases.Preparing),
             CancellationToken.None);
         await backend.CreateAsync(
             config,
@@ -6759,7 +6976,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 // Only codex answers. claude and copilot resolve to no adapter and so report
                 // NotInstalled, which is how the free-text fallback gets exercised on the same page
                 // as the picker.
-                ModelDiscoveries: new Highbyte.Wrighty.Workers.AgentModelDiscoveries(
+                ModelDiscoveries: modelDiscoveries ?? new Highbyte.Wrighty.Workers.AgentModelDiscoveries(
                     new[] { new StubModelDiscovery() }),
                 StorageLocations: new StorageLocationCatalog(
                     new CachePaths(Path.Combine(directory, ".worker-cache"))),
@@ -7157,6 +7374,23 @@ public sealed partial class WrightyWebServerTests : IDisposable
                         SupportedEfforts: ["low", "high", "ultra"])
                 ],
                 CurrentModelId: "gpt-5.6-sol"));
+    }
+
+    private sealed class CoordinatedModelDiscovery(string agent, Task release) : IAgentModelDiscovery
+    {
+        private readonly TaskCompletionSource<bool> started = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public string Agent => agent;
+
+        public Task Started => started.Task;
+
+        public async Task<AgentModelCatalog> DiscoverAsync(CancellationToken cancellationToken)
+        {
+            started.TrySetResult(true);
+            await release.WaitAsync(cancellationToken);
+            return new AgentModelCatalog(agent, []);
+        }
     }
 
     private static string HiddenValue(string html, string name)
