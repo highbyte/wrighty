@@ -53,12 +53,20 @@ requirements and the exact coordination guarantees.
 With Local Markdown, `wrighty web` provides the board, item editor, recovery actions, and local
 worker visibility:
 
-[![Local Markdown Wrighty board with Todo, Worker queue, In Progress, Done, and attention-required items](docs/assets/screenshots/local-markdown-web-ui-board.png)](docs/assets/screenshots/local-markdown-web-ui-board.png)
+<p>
+  <a href="docs/assets/screenshots/local-markdown-web-ui-board.png"><img src="docs/assets/screenshots/local-markdown-web-ui-board.png" width="31%" align="top" alt="Local Markdown Wrighty board with Todo, Worker queue, In Progress, and Done columns"></a>
+  <a href="docs/assets/screenshots/local-markdown-web-ui-board-agents.png"><img src="docs/assets/screenshots/local-markdown-web-ui-board-agents.png" width="31%" align="top" alt="Local Markdown Wrighty board with the Agents popover open"></a>
+  <a href="docs/assets/screenshots/local-markdown-web-ui-board-workers.png"><img src="docs/assets/screenshots/local-markdown-web-ui-board-workers.png" width="31%" align="top" alt="Local Markdown Wrighty board with the Workers popover open"></a>
+</p>
+<p>
+  <a href="docs/assets/screenshots/local-markdown-web-ui-board-needs-attention.png"><img src="docs/assets/screenshots/local-markdown-web-ui-board-needs-attention.png" width="15.5%" align="top" alt="Local Markdown Wrighty board showing an item that needs attention"></a>
+  <a href="docs/assets/screenshots/local-markdown-web-ui-operations.png"><img src="docs/assets/screenshots/local-markdown-web-ui-operations.png" width="31%" align="top" alt="Local Markdown Wrighty Operations view"></a>
+</p>
 
 With the GitHub backend, the configured GitHub Project remains the shared board. Wrighty adds the
 queue, policy, claim, and recovery state used by local workers on each computer:
 
-[![GitHub Project board with Wrighty queue, policy, claim, and recovery fields](docs/assets/screenshots/github-board.png)](docs/assets/screenshots/github-board.png)
+<a href="docs/assets/screenshots/github-board.png"><img src="docs/assets/screenshots/github-board.png" width="31%" align="top" alt="GitHub Project board with Wrighty queue, policy, claim, and recovery fields"></a>
 
 See [Wrighty workflows](docs/workflows.md) for the actions behind these views and the
 [Web console](docs/reference/web-console.md) for the backend-specific web surfaces.

@@ -172,9 +172,7 @@ For Local Markdown, run `wrighty web`, choose **New item**, enter the structured
 **Create item**. Creation does not claim the item or start a worker. The resulting card is selected
 and the board refreshes.
 
-[![Local Markdown New item form with status, priority, automatic execution, and agent policy controls](assets/screenshots/local-markdown-web-ui-item-create.png)](assets/screenshots/local-markdown-web-ui-item-create.png)
-
-The example above creates an explicitly authorized **Worker queue** item. For ordinary intake,
+To create an explicitly authorized **Worker queue** item, select that status. For ordinary intake,
 choose **Todo** and leave **Allow automatic execution** unchecked.
 
 For GitHub, create from the configured Project's `Todo` group or column in a board grouped by the
@@ -498,12 +496,7 @@ Wrighty takes no claim, passes no claimant credentials, and leaves any further c
 workspace changes to the operator.
 
 The Local Markdown item panel keeps the agent's request, last-run result, retained session and
-workspace, and the next recovery actions together. Select either view for the full-size image.
-
-<p>
-  <a href="assets/screenshots/local-markdown-web-ui-item-attention.png"><img src="assets/screenshots/local-markdown-web-ui-item-attention.png" width="49%" alt="Upper part of a Local Markdown item panel showing an agent request for clarification and the last run result"></a>
-  <a href="assets/screenshots/local-markdown-web-ui-item-attention2.png"><img src="assets/screenshots/local-markdown-web-ui-item-attention2.png" width="49%" alt="Lower part of the same item panel showing retained claim, session, workspace, and recovery actions"></a>
-</p>
+workspace, and the next recovery actions together.
 
 1. Open the item marked **Agent needs attention**.
 2. If the work item is already correct and an external problem has been fixed, choose **Queue for
