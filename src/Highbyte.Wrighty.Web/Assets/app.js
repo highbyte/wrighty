@@ -29,6 +29,7 @@ import {
   toggleSortDirection,
   dismissBoardFilterMenu,
   dismissHeaderPopovers,
+  toggleHeaderPopover,
   syncBoardFilterIndicator,
   clearBoardFilters,
   resetBoardView,
@@ -67,6 +68,7 @@ const boardFilterMenu = document.querySelector("#board-filter-menu");
 let boardRevision = null;
 let agentsRevision = null;
 let workerSummaryRevision = null;
+let workerOverviewRevision = null;
 let lastOpenedItem = null;
 let authenticationReadyDispatched = false;
 let boardControlFocus = null;
@@ -77,7 +79,10 @@ let hostedLogViews = [];
 let agentsMenuOpen = false;
 let agentDetailsOpen = null;
 const agentSkillScopes = new Map();
-let workerProcessesRevealPending = false;
+let workerMenuOpen = false;
+let workerProcessesRevealPending = null;
+let focusedWorkerRunId = null;
+let focusedWorkerTimer = null;
 
 syncBoardFilterIndicator(boardFilters, boardFilterMenu);
 
@@ -100,14 +105,26 @@ function refreshAgents() {
 function refreshWorkerSummary() {
   const workerSummary = document.querySelector("#worker-summary-region");
   if (workerSummary && document.visibilityState === "visible" &&
+      !workerSummary.querySelector(".worker-menu[open]") &&
       !workerSummary.matches(".htmx-request")) {
-    workerSummary.dispatchEvent(new CustomEvent("wrighty:refresh"));
+    workerSummary.dispatchEvent(new CustomEvent("wrighty:worker-summary-refresh"));
   }
+}
+
+function refreshWorkerOverview() {
+  const menu = document.querySelector("#worker-summary-region .worker-menu");
+  const content = document.querySelector("#worker-overview-content");
+  const requestInFlight = content?.matches?.(".htmx-request") ||
+    content?.querySelector?.(".htmx-request");
+  if (!menu?.open || !content || document.visibilityState !== "visible" || requestInFlight)
+    return;
+  content.dispatchEvent(new CustomEvent("wrighty:worker-overview-refresh"));
 }
 
 function refreshDashboard() {
   refreshBoard();
   refreshWorkerSummary();
+  refreshWorkerOverview();
   refreshAgents();
   refreshVisibleOperations(document);
 }
@@ -127,6 +144,7 @@ document.addEventListener("wrighty:refresh", () => {
   boardRevision = null;
   agentsRevision = null;
   workerSummaryRevision = null;
+  workerOverviewRevision = null;
   refreshDashboard();
 });
 
@@ -232,17 +250,39 @@ function selectTab(tab) {
 }
 
 function revealPendingWorkerProcesses() {
-  if (!workerProcessesRevealPending || !revealWorkerProcesses(document)) return false;
-  workerProcessesRevealPending = false;
+  if (workerProcessesRevealPending === null) return false;
+  const runId = workerProcessesRevealPending || null;
+  if (!revealWorkerProcesses(document, runId)) return false;
+  workerProcessesRevealPending = null;
   return true;
 }
 
-function openWorkerProcesses() {
+function focusWorkerForDetails(runId) {
+  focusedWorkerRunId = runId;
+  clearTimeout(focusedWorkerTimer);
+  if (!runId) return;
+  document.getElementById(`worker-instance-${runId}`)
+    ?.classList.add("worker-row-focused");
+  focusedWorkerTimer = setTimeout(() => {
+    document.getElementById(`worker-instance-${runId}`)
+      ?.classList.remove("worker-row-focused");
+    if (focusedWorkerRunId === runId) focusedWorkerRunId = null;
+  }, 6000);
+}
+
+function closeWorkerOverview() {
+  const menu = document.querySelector("#worker-summary-region .worker-menu");
+  if (menu?.open) menu.open = false;
+}
+
+function openWorkerProcesses(runId = null) {
   const operationsTab = document.querySelector("#tab-operations");
   if (!operationsTab) return;
   selectTabWithSettingsGuard(operationsTab, {
     afterSelect() {
-      workerProcessesRevealPending = true;
+      closeWorkerOverview();
+      focusWorkerForDetails(runId);
+      workerProcessesRevealPending = runId || "";
       requestAnimationFrame(revealPendingWorkerProcesses);
     }
   });
@@ -384,6 +424,10 @@ document.addEventListener("htmx:configRequest", event => {
   if (workerSummaryRevision && url.includes("handler=WorkerSummary")) {
     event.detail.headers["If-None-Match"] = `"${workerSummaryRevision}"`;
   }
+  if (workerOverviewRevision && url.includes("handler=WorkerOverview") &&
+      document.querySelector("#worker-overview-content [data-worker-overview-revision]")) {
+    event.detail.headers["If-None-Match"] = `"${workerOverviewRevision}"`;
+  }
 });
 
 document.addEventListener("htmx:beforeRequest", event => {
@@ -397,6 +441,11 @@ document.addEventListener("htmx:beforeRequest", event => {
     if (agentDetailsOpen && selectedScope) {
       agentSkillScopes.set(agentDetailsOpen, selectedScope);
     }
+  }
+  const workerSummary = event.detail.target?.closest?.("#worker-summary-region") ||
+    event.target.closest?.("#worker-summary-region");
+  if (workerSummary) {
+    workerMenuOpen = Boolean(workerSummary.querySelector(".worker-menu")?.open);
   }
   const card = event.target.closest?.(".card");
   if (card) lastOpenedItem = card.dataset.itemId;
@@ -479,15 +528,35 @@ function restoreWorkerSummaryAfterSwap(target) {
   const workerSummary =
     target.closest?.("#worker-summary-region") ||
     document.querySelector("#worker-summary-region");
-  if (workerSummary?.dataset.revision)
+  if (workerSummary?.dataset.revision) {
     workerSummaryRevision = workerSummary.dataset.revision;
+    const menu = workerSummary.querySelector(".worker-menu");
+    if (menu && workerMenuOpen) {
+      menu.open = true;
+      menu.querySelector("#worker-overview-content")
+        ?.dispatchEvent(new CustomEvent("wrighty:worker-overview-open"));
+    }
+  }
+}
+
+function restoreWorkerOverviewAfterSwap(target) {
+  const overview = target.closest?.("#worker-overview-content") ||
+    document.querySelector("#worker-overview-content");
+  const revision = overview?.querySelector("[data-worker-overview-revision]")
+    ?.dataset.workerOverviewRevision;
+  if (revision) workerOverviewRevision = revision;
 }
 
 function restoreOperationsAfterSwap(target) {
   if (target.closest?.("#operations-content")) {
     restoreOperationsControlFocus(document, operationsControlFocus);
     operationsControlFocus = null;
-    if (workerProcessesRevealPending) requestAnimationFrame(revealPendingWorkerProcesses);
+    if (focusedWorkerRunId) {
+      document.getElementById(`worker-instance-${focusedWorkerRunId}`)
+        ?.classList.add("worker-row-focused");
+    }
+    if (workerProcessesRevealPending !== null)
+      requestAnimationFrame(revealPendingWorkerProcesses);
   }
   if (target.classList?.contains("hosted-worker-log") || target.id === "operations-content") {
     // outerHTML swaps leave detail.target pointing at the detached old node. Resolve against the
@@ -503,6 +572,7 @@ document.addEventListener("htmx:afterSwap", event => {
   restoreBoardAfterSwap(target);
   restoreAgentsAfterSwap(target);
   restoreWorkerSummaryAfterSwap(target);
+  restoreWorkerOverviewAfterSwap(target);
   restoreOperationsAfterSwap(target);
 
   const heading = target.querySelector?.(".detail h2");
@@ -744,6 +814,12 @@ function handleGeneralClick(target) {
 
   handleLaunchDialogClick(target);
 
+  const workerDetails = target.closest("[data-worker-details-run-id]");
+  if (workerDetails) {
+    openWorkerProcesses(workerDetails.dataset.workerDetailsRunId);
+    return;
+  }
+
   if (target.closest("[data-open-worker-processes]")) {
     openWorkerProcesses();
     return;
@@ -797,7 +873,17 @@ document.addEventListener("change", event => {
 document.addEventListener("click", event => {
   closeTokenPickerPopovers(document, event.target);
   dismissWorkspaceModeHelp(document, event.target);
-  dismissHeaderPopovers(document, event.target);
+  const headerToggle = toggleHeaderPopover(document, event.target);
+  if (headerToggle) {
+    event.preventDefault();
+    agentsMenuOpen = Boolean(document.querySelector("#agents-region .agents-menu")?.open);
+    workerMenuOpen = Boolean(
+      document.querySelector("#worker-summary-region .worker-menu")?.open);
+  } else if (dismissHeaderPopovers(document, event.target) > 0) {
+    agentsMenuOpen = Boolean(document.querySelector("#agents-region .agents-menu")?.open);
+    workerMenuOpen = Boolean(
+      document.querySelector("#worker-summary-region .worker-menu")?.open);
+  }
   const filterClose = event.target.closest?.("[data-close-board-filters]");
   if (dismissBoardFilterMenu(boardFilterMenu, event.target) && filterClose) return;
   if (handleBoardSortClick(event.target)) return;
@@ -807,6 +893,21 @@ document.addEventListener("click", event => {
   if (handleOperationsSortClick(event.target)) return;
   handleGeneralClick(event.target);
 });
+
+document.addEventListener("toggle", event => {
+  const agentsMenu = event.target.closest?.("#agents-region .agents-menu");
+  if (agentsMenu) {
+    agentsMenuOpen = agentsMenu.open;
+    return;
+  }
+  const menu = event.target.closest?.("#worker-summary-region .worker-menu");
+  if (!menu) return;
+  workerMenuOpen = menu.open;
+  if (menu.open) {
+    menu.querySelector("#worker-overview-content")
+      ?.dispatchEvent(new CustomEvent("wrighty:worker-overview-open"));
+  }
+}, true);
 
 window.addEventListener("resize", () => refreshExpandableValues());
 

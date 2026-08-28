@@ -47,10 +47,19 @@ not replace the board.
 
 ## Start, observe, and stop workers
 
-**Operations → Local worker processes** shows both kinds of local worker:
+The header's **Workers** button opens an installation-local anchored popover, matching the
+**Agents** control. It lists running
+workers, distinguishes **Worker preparing** from **Agent working**, shows the current item, agent,
+runtime, and heartbeat, and offers a confirmed graceful **Stop** plus **Details**. **Details** opens
+Operations at that exact worker and briefly highlights it. **Start new worker** adds a worker owned
+by the current web-console process. Stale or unverifiable registrations stay out of the running
+list and are linked to the complete Operations view.
+
+**Operations → Local worker processes** remains the complete surface and shows both kinds of local
+worker:
 
 - **Hosted by this web console** is a background task owned by the current `wrighty web` process.
-  Every **Start worker** action adds another generic continuous worker using the configuration
+  Every **Start worker** or **Start new worker** action adds another generic continuous worker using the configuration
   snapshot loaded at web startup. Closing, refreshing, or navigating away from the browser does
   not stop them. Stopping the `wrighty web` process does.
 - **Started outside the web console** is a `wrighty worker` process launched by a terminal, service
@@ -61,8 +70,9 @@ and current agent. Older worker versions that did not publish the agent say so i
 from the item or claim. Stale and unverifiable records label item, agent, and state as last-reported
 facts. The header's **Workers** button reports the verified running count from every tab, labels an
 idle pool, and highlights how many workers are actively processing an item. Stale or unverifiable
-registrations are called out separately. Select the button to open and focus **Operations → Local
-worker processes**. The current hosted worker card exposes a bounded structured operational log. Opening it
+registrations are called out separately. Select the button to open the running-worker overview;
+use **Details** or **View all in Operations** for the complete process controls. The current hosted
+worker card exposes a bounded structured operational log. Opening it
 starts at the newest event. Normal and manual Operations refreshes continue updating the whole
 worker card while preserving the disclosure and its scroll position for the same run. Updates
 follow the tail until the operator scrolls back, at which point Wrighty preserves that reading

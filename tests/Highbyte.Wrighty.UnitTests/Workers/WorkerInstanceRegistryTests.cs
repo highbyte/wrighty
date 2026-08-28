@@ -34,11 +34,33 @@ public sealed class WorkerInstanceRegistryTests : IDisposable
 
         await registration.UpdateAsync(
             "local:42",
+            "Fix worker controls",
+            "codex",
             WorkerInstanceState.RunningItem,
             CancellationToken.None);
         var updated = Assert.Single(await registry.ListAsync(configPath, CancellationToken.None));
         Assert.Equal("local:42", updated.Instance.CurrentItemId);
+        Assert.Equal("Fix worker controls", updated.Instance.CurrentItemTitle);
+        Assert.Equal("codex", updated.Instance.CurrentAgent);
         Assert.Equal(WorkerInstanceState.RunningItem, updated.Instance.State);
+
+        await registration.UpdateAsync(
+            currentItemId: "local:42",
+            currentItemTitle: null,
+            currentAgent: "codex",
+            state: WorkerInstanceState.RunningItem,
+            cancellationToken: CancellationToken.None);
+        updated = Assert.Single(await registry.ListAsync(configPath, CancellationToken.None));
+        Assert.Equal("Fix worker controls", updated.Instance.CurrentItemTitle);
+
+        await registration.UpdateAsync(
+            currentItemId: null,
+            currentItemTitle: null,
+            currentAgent: null,
+            state: WorkerInstanceState.Idle,
+            cancellationToken: CancellationToken.None);
+        updated = Assert.Single(await registry.ListAsync(configPath, CancellationToken.None));
+        Assert.Null(updated.Instance.CurrentItemTitle);
 
         await registration.DisposeAsync();
         Assert.Empty(await registry.ListAsync(configPath, CancellationToken.None));

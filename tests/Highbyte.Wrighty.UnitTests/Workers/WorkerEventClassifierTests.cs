@@ -12,7 +12,7 @@ public sealed class WorkerEventClassifierTests
         },
         {
             WorkerEventSemantic.Info,
-            ["info", "ready", "started", "resumed", "session", "dry-run",
+            ["info", "ready", "preparing", "started", "resumed", "session", "dry-run",
                 "requirements-assessment-started"]
         },
         {

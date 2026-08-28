@@ -30,13 +30,13 @@
     <div class="app-header-status">
       <section id="worker-summary-region"
                hx-get="/?handler=WorkerSummary"
-               hx-trigger="wrighty:ready, wrighty:refresh"
+               hx-trigger="wrighty:ready, wrighty:worker-summary-refresh"
                hx-swap="outerHTML">Loading workers…</section>
       @if (Model.AgentManagementAvailable)
       {
         <section id="agents-region"
                  hx-get="/?handler=Agents"
-                 hx-trigger="wrighty:ready, wrighty:refresh"
+                 hx-trigger="wrighty:ready, wrighty:agents-refresh"
                  hx-sync="#agents-region:replace"
                  hx-swap="outerHTML">Loading agents…</section>
       }

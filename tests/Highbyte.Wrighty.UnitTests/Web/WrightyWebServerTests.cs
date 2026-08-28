@@ -87,6 +87,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.DoesNotContain("id=\"provider-capacity-region\"", shell);
         Assert.DoesNotContain("id=\"skill-status-region\"", shell);
         Assert.Contains("id=\"worker-summary-region\"", shell);
+        Assert.DoesNotContain("worker-overview-dialog", shell);
         // The page-level tabs: every section is discoverable without scrolling, board first for
         // the local backend.
         Assert.Contains("role=\"tablist\"", shell);
@@ -206,8 +207,30 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("id=\"worker-summary-button\"", workerSummaryHtml);
         Assert.Contains(">Workers</span>", workerSummaryHtml);
         Assert.Contains("<strong>0</strong>", workerSummaryHtml);
-        Assert.Contains("data-open-worker-processes", workerSummaryHtml);
+        Assert.Contains("<details class=\"worker-menu\">", workerSummaryHtml);
+        Assert.Contains("class=\"worker-overview-popover\"", workerSummaryHtml);
+        Assert.Contains("id=\"worker-overview-content\"", workerSummaryHtml);
+        Assert.Contains("handler=WorkerOverview", workerSummaryHtml);
         Assert.NotNull(workerSummary.Headers.ETag);
+
+        using var workerOverviewRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=WorkerOverview");
+        using var workerOverview = await client.SendAsync(workerOverviewRequest);
+        var workerOverviewHtml = await workerOverview.Content.ReadAsStringAsync();
+        Assert.Equal(HttpStatusCode.OK, workerOverview.StatusCode);
+        Assert.Contains("id=\"worker-overview-heading\"", workerOverviewHtml);
+        Assert.Contains("Workers on this installation", workerOverviewHtml);
+        Assert.Contains("No workers are running", workerOverviewHtml);
+        Assert.Contains("data-worker-overview-revision=", workerOverviewHtml);
+        Assert.NotNull(workerOverview.Headers.ETag);
+
+        using var unchangedWorkerOverviewRequest = AuthenticatedGet(
+            host,
+            $"{host.Origin}/?handler=WorkerOverview");
+        unchangedWorkerOverviewRequest.Headers.IfNoneMatch.Add(workerOverview.Headers.ETag);
+        using var unchangedWorkerOverview = await client.SendAsync(unchangedWorkerOverviewRequest);
+        Assert.Equal(HttpStatusCode.NoContent, unchangedWorkerOverview.StatusCode);
 
         using var unchangedWorkerSummaryRequest = AuthenticatedGet(
             host,
@@ -648,10 +671,23 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 client,
                 host,
                 "StartHostedWorker",
-                []);
-            var html = await response.Content.ReadAsStringAsync();
+                new Dictionary<string, string> { ["surface"] = "overview" });
+            var overviewHtml = await response.Content.ReadAsStringAsync();
 
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.Contains("Workers on this installation", overviewHtml);
+            Assert.Contains("This web console", overviewHtml);
+            Assert.Contains("id=\"start-worker-from-overview\"", overviewHtml);
+            Assert.Contains("class=\"primary button-compact\"", overviewHtml);
+            Assert.Contains("data-worker-details-run-id=", overviewHtml);
+            Assert.Contains(">Stop</button>", overviewHtml);
+            Assert.Contains("name=\"surface\" value=\"overview\"", overviewHtml);
+            Assert.DoesNotContain("worker-overview-notice", overviewHtml);
+
+            using var operationsRequest = AuthenticatedGet(
+                host,
+                $"{host.Origin}/?handler=Operations");
+            var html = await (await client.SendAsync(operationsRequest)).Content.ReadAsStringAsync();
             var origin = html.IndexOf("Hosted by this web console", StringComparison.Ordinal);
             Assert.True(origin >= 0, html);
             var cardStart = html.LastIndexOf("<article", origin, StringComparison.Ordinal);
@@ -667,6 +703,24 @@ public sealed partial class WrightyWebServerTests : IDisposable
             Assert.Contains("title=\"Shows the latest 200 lifecycle events;", html);
             Assert.DoesNotContain("Hosted worker operational log ·", html);
             Assert.DoesNotContain("class=\"hosted-log-safety\"", html);
+
+            var stopResponse = await PostForm(
+                client,
+                host,
+                "StopWorker",
+                new Dictionary<string, string>
+                {
+                    ["surface"] = "overview",
+                    ["runId"] = HiddenValue(overviewHtml, "runId"),
+                    ["processId"] = HiddenValue(overviewHtml, "processId"),
+                    ["processStartIdentity"] = HiddenValue(overviewHtml, "processStartIdentity"),
+                    ["hostKind"] = HiddenValue(overviewHtml, "hostKind"),
+                    ["mode"] = "Drain"
+                });
+            var stoppedOverviewHtml = await stopResponse.Content.ReadAsStringAsync();
+
+            Assert.Equal(HttpStatusCode.OK, stopResponse.StatusCode);
+            Assert.DoesNotContain("worker-overview-notice", stoppedOverviewHtml);
         }
         finally
         {
@@ -6082,7 +6136,11 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("function refreshAgents()", applicationScript);
         Assert.DoesNotContain("function refreshProviderCapacity()", applicationScript);
         Assert.Contains("function refreshWorkerSummary()", applicationScript);
-        Assert.Contains("function openWorkerProcesses()", applicationScript);
+        Assert.Contains("function refreshWorkerOverview()", applicationScript);
+        Assert.Contains("workerMenuOpen = menu.open", applicationScript);
+        Assert.Contains("wrighty:worker-overview-open", applicationScript);
+        Assert.Contains("function focusWorkerForDetails(runId)", applicationScript);
+        Assert.Contains("function openWorkerProcesses(runId = null)", applicationScript);
         Assert.Contains("handler=WorkerSummary", applicationScript);
         Assert.Contains("refreshVisibleOperations(document);", applicationScript);
         Assert.Contains("setInterval(refreshDashboard, 2000)", applicationScript);

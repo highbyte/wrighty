@@ -15,14 +15,16 @@ internal static class HostedWorkerEventProjection
         string? agent,
         WorkerEvent value)
     {
-        var running = value.Type is "started" or "resumed" or "running" or "session";
+        var preparing = value.Type == "preparing";
+        var running = value.Type is "started" or "resumed" or "retry-started" or
+            "handoff-started" or "requirements-assessment-started" or "running" or "session";
         var terminal = value.Type is "finished" or "needs-attention" or "failed" or
             "fenced" or "timed-out" or "rejected" or "retry-scheduled" or "interrupted";
         var stopping = state is WebHostedWorkerState.Draining or
             WebHostedWorkerState.StoppingNow or WebHostedWorkerState.Finalizing;
         state = ProjectAmbientState(state, value.Type, stopping);
 
-        if (running && value.ItemId is not null)
+        if ((preparing || running) && value.ItemId is not null)
         {
             if (!stopping)
                 state = WebHostedWorkerState.Running;
@@ -70,6 +72,7 @@ internal static class HostedWorkerEventProjection
     {
         "idle" or "no-item" or "retry-scheduled" or "workspace-busy" or
             "agent-unavailable" or "provider-unavailable" => SafeMessage(value.Message),
+        "preparing" => "The worker is preparing the item for its agent.",
         "started" => "The agent session started.",
         "resumed" => "The retained agent session resumed.",
         "running" or "session" => "The agent session is running.",

@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Claims;
 using Highbyte.Wrighty.Configuration;
@@ -484,6 +486,62 @@ public sealed record WorkerSummaryPageModel(
         workers.Count(worker => worker.Liveness != WorkerInstanceLiveness.Running));
 }
 
+public sealed record WorkerOverviewPageModel(
+    string LocalHostName,
+    IReadOnlyList<WorkerInstanceStatus> Workers,
+    IReadOnlyList<HostedWorkerSnapshot> HostedWorkers,
+    bool HostedWorkerAvailable,
+    string? ErrorCode = null,
+    string? ErrorMessage = null,
+    string? PendingStopRunId = null)
+{
+    public string Revision
+    {
+        get
+        {
+            var workers = Workers
+                .OrderBy(worker => worker.Instance.RunId, StringComparer.Ordinal)
+                .Select(worker =>
+                {
+                    var instance = worker.Instance;
+                    return string.Join('\u001f',
+                        instance.RunId,
+                        instance.ProcessId,
+                        instance.StartedAt.ToString("O", CultureInfo.InvariantCulture),
+                        instance.InvocationSummary,
+                        instance.CurrentItemId,
+                        instance.CurrentItemTitle,
+                        instance.State,
+                        instance.HostKind,
+                        instance.CurrentAgent,
+                        instance.ControlProtocolVersion,
+                        string.Join(',', instance.SupportedStopModes ?? []),
+                        worker.Liveness,
+                        worker.Detail);
+                });
+            var hosted = HostedWorkers
+                .OrderBy(worker => worker.RunId, StringComparer.Ordinal)
+                .Select(worker => $"{worker.RunId}\u001f{worker.State}");
+            var value = string.Join('\n',
+                LocalHostName,
+                HostedWorkerAvailable,
+                ErrorCode,
+                ErrorMessage,
+                PendingStopRunId,
+                string.Join('\n', workers),
+                string.Join('\n', hosted));
+            return Convert.ToHexStringLower(
+                SHA256.HashData(Encoding.UTF8.GetBytes(value)));
+        }
+    }
+
+    public IReadOnlyList<WorkerInstanceStatus> RunningWorkers => Workers
+        .Where(worker => worker.Liveness == WorkerInstanceLiveness.Running)
+        .ToArray();
+
+    public int UnavailableCount => Workers.Count - RunningWorkers.Count;
+}
+
 public sealed record OperationsPageModel(
     WebSurfaceCapabilities Capabilities,
     string Backend,
@@ -502,7 +560,6 @@ public sealed record OperationsPageModel(
     IReadOnlyList<AgentOptionView>? AvailableAgents = null,
     IReadOnlyList<string>? AvailablePriorities = null,
     IReadOnlyList<string>? AvailableWorkflowStatuses = null,
-    string? WorkerNotice = null,
     string? WorkerErrorCode = null,
     string? WorkerErrorMessage = null)
 {

@@ -1126,7 +1126,7 @@ wrighty status --json   # same groups for scripting
   branch, its `dirty`/`merged` git state, and the integration commands for the configured policy.
 - **Paused — resumable session** — retained sessions waiting to be resumed, with the resume command.
 - **Active** — items with a live claim. A worker-run claim reports **Worker preparing** while the
-  workspace and launch are being prepared, then the selected agent as **processing** after its
+  workspace and launch are being prepared, then the selected agent as **working** after its
   operating-system process starts; human editing and automation claims retain their own labels.
 - **Resume queued** — items marked to be resumed by a continuous worker.
 - **Retry scheduled** — retained sessions waiting for their bounded retry time.
@@ -1137,7 +1137,7 @@ wrighty status --json   # same groups for scripting
   `wrighty provider probe AGENT` to test it immediately without selecting a work item.
 - **Local worker processes** — one installation-local heartbeat record per worker invocation,
   including CLI-process/web-hosted origin, PID, verified/stale/unknown liveness, lifecycle state,
-  current item and agent, cooperative-control version, startup configuration revision, and a
+  current item title and agent, cooperative-control version, startup configuration revision, and a
   sanitized invocation summary. The web console orders Running, then Unknown, then Stale workers,
   then uses immutable start time and run ID within each group so heartbeat updates never make cards
   trade places. Stale rows are visually de-emphasized.

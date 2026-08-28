@@ -405,12 +405,22 @@ public sealed class IndexModel(
 
     public async Task<IActionResult> OnPostStartHostedWorkerAsync(
         [FromForm] OperationsListInput input,
+        string? surface,
         CancellationToken cancellationToken)
     {
         var result = await hostedWorker.StartAsync();
         Response.Headers["HX-Trigger"] = "wrighty:refresh";
+        if (IsWorkerOverviewSurface(surface))
+        {
+            return Partial(
+                "Shared/_WorkerOverview",
+                await WorkerOverviewAsync(
+                    cancellationToken,
+                    errorCode: result.Accepted ? null : result.Code,
+                    errorMessage: result.Accepted ? null : result.Message));
+        }
         var feedback = result.Accepted
-            ? new OperationsFeedback(WorkerNotice: result.Message)
+            ? new OperationsFeedback()
             : new OperationsFeedback(
                 WorkerErrorCode: result.Code,
                 WorkerErrorMessage: result.Message);
@@ -429,11 +439,21 @@ public sealed class IndexModel(
         string hostKind,
         string mode,
         [FromForm] OperationsListInput input,
+        string? surface,
         CancellationToken cancellationToken)
     {
         if (!Enum.TryParse<WorkerHostKind>(hostKind, ignoreCase: true, out var parsedHostKind) ||
             !Enum.TryParse<WorkerStopMode>(mode, ignoreCase: true, out var parsedMode))
         {
+            if (IsWorkerOverviewSurface(surface))
+            {
+                return Partial(
+                    "Shared/_WorkerOverview",
+                    await WorkerOverviewAsync(
+                        cancellationToken,
+                        errorCode: "ARGUMENT_INVALID",
+                        errorMessage: "The worker stop request was invalid."));
+            }
             return Partial(
                 "Shared/_Operations",
                 await OperationsAsync(
@@ -476,11 +496,21 @@ public sealed class IndexModel(
         }
 
         var feedback = result.Accepted
-            ? new OperationsFeedback(WorkerNotice: result.Message)
+            ? new OperationsFeedback()
             : new OperationsFeedback(
                 WorkerErrorCode: result.Code,
                 WorkerErrorMessage: result.Message);
         Response.Headers["HX-Trigger"] = "wrighty:refresh";
+        if (IsWorkerOverviewSurface(surface))
+        {
+            return Partial(
+                "Shared/_WorkerOverview",
+                await WorkerOverviewAsync(
+                    cancellationToken,
+                    errorCode: result.Accepted ? null : result.Code,
+                    errorMessage: result.Accepted ? null : result.Message,
+                    pendingStopRunId: result.Accepted ? runId : null));
+        }
         return Partial(
             "Shared/_Operations",
             await OperationsAsync(
@@ -1258,7 +1288,6 @@ public sealed class IndexModel(
                 .ToArray(),
             AvailablePriorities: itemsResult.PriorityOptions,
             AvailableWorkflowStatuses: itemsResult.WorkflowStatusOptions,
-            WorkerNotice: feedback.WorkerNotice,
             WorkerErrorCode: feedback.WorkerErrorCode,
             WorkerErrorMessage: feedback.WorkerErrorMessage);
     }
@@ -1343,6 +1372,23 @@ public sealed class IndexModel(
             return [];
         }
     }
+
+    private async Task<WorkerOverviewPageModel> WorkerOverviewAsync(
+        CancellationToken cancellationToken,
+        string? errorCode = null,
+        string? errorMessage = null,
+        string? pendingStopRunId = null) =>
+        new(
+            state.LocalHostName,
+            await LoadWorkersAsync(cancellationToken),
+            hostedWorker.Snapshots(),
+            hostedWorker.Available,
+            errorCode,
+            errorMessage,
+            pendingStopRunId);
+
+    private static bool IsWorkerOverviewSurface(string? surface) =>
+        string.Equals(surface, "overview", StringComparison.OrdinalIgnoreCase);
 
     private async Task<ContextApprovalView> ContextApprovalAsync(
         OperationsFeedback feedback,
@@ -1891,7 +1937,6 @@ public sealed class IndexModel(
         string? ContextErrorMessage = null,
         ExecutionContextResult? ContextResult = null,
         bool ContextRenewed = false,
-        string? WorkerNotice = null,
         string? WorkerErrorCode = null,
         string? WorkerErrorMessage = null);
 
@@ -2027,6 +2072,19 @@ public sealed class IndexModel(
 
         Response.Headers.ETag = etag;
         return Partial("Shared/_WorkerSummary", summary);
+    }
+
+    public async Task<IActionResult> OnGetWorkerOverviewAsync(
+        CancellationToken cancellationToken)
+    {
+        var overview = await WorkerOverviewAsync(cancellationToken);
+        var etag = $"\"{overview.Revision}\"";
+        if (Request.Headers.IfNoneMatch.Any(value =>
+                string.Equals(value, etag, StringComparison.Ordinal)))
+            return StatusCode(StatusCodes.Status204NoContent);
+
+        Response.Headers.ETag = etag;
+        return Partial("Shared/_WorkerOverview", overview);
     }
 
     public async Task<IActionResult> OnGetItemAsync(string id, CancellationToken cancellationToken)

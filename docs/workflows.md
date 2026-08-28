@@ -383,8 +383,8 @@ worktrees, or choose `--workspace-mode shared` explicitly and accept the collisi
 
 ### Web console
 
-Use **Start worker** on Operations to add a continuous worker hosted by the current web server.
-Select it again to add more. Closing or navigating away from the browser does not stop them;
+Use **Start new worker** in the header's **Workers** overview—or **Start worker** on Operations—to
+add a continuous worker hosted by the current web server. Select it again to add more. Closing or navigating away from the browser does not stop them;
 stopping `wrighty web` does. Workspace concurrency behaves exactly as it does for CLI workers:
 `current` serializes access and shows extra workers waiting, `worktree` isolates concurrent work,
 and `shared` accepts collision risk. For a persistent service, start `wrighty worker` independently

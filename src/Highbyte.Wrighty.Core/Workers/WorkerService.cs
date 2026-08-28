@@ -684,6 +684,11 @@ public sealed class WorkerService(
         if (selectedAgent is null || selectedDetail is null)
             throw new TrackerException("AGENT_REQUIRED",
                 "An eligible item did not resolve to a supported agent.", 2);
+        await emit(new WorkerEvent(
+            "preparing",
+            selectedDetail.Id.Value,
+            selectedAgent,
+            ItemTitle: selectedDetail.Title));
         return await ProcessAsync(
             config, options, repositoryPath, picked.Claim, selectedDetail,
             selectedAgent, claimantId, kind, emit, cancellationToken);
@@ -1192,6 +1197,11 @@ public sealed class WorkerService(
             ClaimantId: claimantId,
             ExecutionPhase: ClaimExecutionPhases.Preparing);
         var claim = await tracker.ClaimAsync(config, id, context, cancellationToken);
+        await emit(new WorkerEvent(
+            "preparing",
+            detail.Id.Value,
+            agentName,
+            ItemTitle: detail.Title));
 
         var targetStatus = options.ToStatus ?? config.DefaultPickTo;
         if (!string.IsNullOrWhiteSpace(targetStatus) &&
@@ -1269,6 +1279,11 @@ public sealed class WorkerService(
             ExecutionPhase: ClaimExecutionPhases.Preparing);
         var claim = await tracker.TakeoverAsync(config, id, takeoverContext,
             currentClaimToken, cancellationToken);
+        await emit(new WorkerEvent(
+            "preparing",
+            detail.Id.Value,
+            agentName,
+            ItemTitle: detail.Title));
         var claimContext = takeoverContext with { ClaimToken = claim.ClaimToken };
         var grant = new ClaimHandle(claimContext, claim.ClaimToken);
         detail = await ClearDispatchStateAsync(
@@ -1365,6 +1380,11 @@ public sealed class WorkerService(
             ExecutionPhase: ClaimExecutionPhases.Preparing);
         var claim = await tracker.ClaimAsync(
             config, detail.Id, context, cancellationToken);
+        await emit(new WorkerEvent(
+            "preparing",
+            detail.Id.Value,
+            agentName,
+            ItemTitle: detail.Title));
         var claimContext = context with { ClaimToken = claim.ClaimToken };
         var grant = new ClaimHandle(claimContext, claim.ClaimToken);
 
@@ -1885,6 +1905,11 @@ public sealed class WorkerService(
 
         var (claimantId, claimContext, grant, handle) = await AcquireHandoffClaimAsync(
             launch, adapter, cancellationToken);
+        await emit(new WorkerEvent(
+            "preparing",
+            detail.Id.Value,
+            targetAgent,
+            ItemTitle: detail.Title));
 
         var revalidated = await tracker.GetAsync(config, detail.Id, cancellationToken);
         var postClaimRequest = new LaunchPreflightRequest(

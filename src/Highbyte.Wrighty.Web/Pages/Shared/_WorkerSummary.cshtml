@@ -14,33 +14,41 @@
   {
     description += $" {Model.AttentionCount} registered {attentionLabel} attention.";
   }
-  description += " Open Local worker processes in Operations.";
+  description += " Open the worker overview.";
 }
 <section id="worker-summary-region"
          data-revision="@Model.Revision"
          hx-get="/?handler=WorkerSummary"
-         hx-trigger="wrighty:ready, wrighty:refresh"
+         hx-trigger="wrighty:ready, wrighty:worker-summary-refresh"
          hx-swap="outerHTML">
-  <button id="worker-summary-button"
-          class="worker-summary-button@(Model.ProcessingCount > 0 ? " has-active" : null)@(Model.AttentionCount > 0 ? " has-attention" : null)"
-          type="button"
-          data-open-worker-processes
-          title="@description"
-          aria-describedby="worker-summary-description">
-    <span>Workers</span>
-    <strong>@Model.RunningCount</strong>
-    @if (Model.ProcessingCount > 0)
-    {
-      <span class="worker-summary-state worker-summary-active">@Model.ProcessingCount active</span>
-    }
-    else if (Model.RunningCount > 0)
-    {
-      <span class="worker-summary-state">Idle</span>
-    }
-    @if (Model.AttentionCount > 0)
-    {
-      <span class="worker-summary-state worker-summary-attention">@Model.AttentionCount attention</span>
-    }
-  </button>
+  <details class="worker-menu">
+    <summary id="worker-summary-button"
+             class="worker-summary-button@(Model.ProcessingCount > 0 ? " has-active" : null)@(Model.AttentionCount > 0 ? " has-attention" : null)"
+             title="@description"
+             aria-describedby="worker-summary-description">
+      <span>Workers</span>
+      <strong>@Model.RunningCount</strong>
+      @if (Model.ProcessingCount > 0)
+      {
+        <span class="worker-summary-state worker-summary-active">@Model.ProcessingCount active</span>
+      }
+      else if (Model.RunningCount > 0)
+      {
+        <span class="worker-summary-state">Idle</span>
+      }
+      @if (Model.AttentionCount > 0)
+      {
+        <span class="worker-summary-state worker-summary-attention">@Model.AttentionCount attention</span>
+      }
+    </summary>
+    <div class="worker-overview-popover">
+      <section id="worker-overview-content"
+               hx-get="/?handler=WorkerOverview"
+               hx-trigger="wrighty:worker-overview-open, wrighty:worker-overview-refresh"
+               hx-swap="innerHTML">
+        <p class="worker-overview-loading">Loading workers…</p>
+      </section>
+    </div>
+  </details>
   <span id="worker-summary-description" class="visually-hidden">@description</span>
 </section>

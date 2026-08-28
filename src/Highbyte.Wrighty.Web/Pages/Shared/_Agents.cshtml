@@ -82,7 +82,7 @@
 <section id="agents-region"
          data-revision="@Model.Revision"
          hx-get="/?handler=Agents"
-         hx-trigger="wrighty:ready, wrighty:refresh"
+         hx-trigger="wrighty:ready, wrighty:agents-refresh"
          hx-sync="#agents-region:replace"
          hx-swap="outerHTML">
   <details class="agents-menu@(hasIssues ? " has-issues" : " has-current")"

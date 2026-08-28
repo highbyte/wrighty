@@ -90,14 +90,37 @@ export function dismissHeaderPopovers(doc, target) {
   // A fast HTMX response can replace a menu before the originating click bubbles here. The new
   // menu cannot contain the now-detached target, but target.closest() still identifies which kind
   // of menu the click came from. Keep that replacement open while closing other menu types.
-  const sourceMenu = target.closest?.(".agents-menu");
+  const sourceMenu = target.closest?.(".agents-menu, .worker-menu");
+  const sourceMenuClass = sourceMenu?.classList?.contains("agents-menu")
+    ? "agents-menu"
+    : sourceMenu?.classList?.contains("worker-menu")
+      ? "worker-menu"
+      : null;
   let closed = 0;
-  doc.querySelectorAll(".agents-menu[open]").forEach(menu => {
-    if (sourceMenu || menu.contains(target)) return;
+  doc.querySelectorAll(".agents-menu[open], .worker-menu[open]").forEach(menu => {
+    if (menu === sourceMenu || menu.contains(target) ||
+        (sourceMenuClass && menu.classList?.contains(sourceMenuClass))) return;
     menu.open = false;
     closed += 1;
   });
   return closed;
+}
+
+export function toggleHeaderPopover(doc, target) {
+  if (!doc?.querySelectorAll || !target) return null;
+  const summary = target.closest?.(".agents-menu > summary, .worker-menu > summary");
+  const menu = summary?.closest?.(".agents-menu, .worker-menu");
+  if (!menu) return null;
+
+  const opening = !menu.open;
+  doc.querySelectorAll(".agents-menu[open], .worker-menu[open]").forEach(candidate => {
+    if (candidate !== menu) candidate.open = false;
+  });
+  menu.open = opening;
+  return {
+    kind: menu.classList?.contains("agents-menu") ? "agents" : "workers",
+    open: opening
+  };
 }
 
 const structuredBoardFilterNames = new Set([
