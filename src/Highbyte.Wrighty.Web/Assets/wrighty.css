@@ -76,7 +76,13 @@ button.danger { color: var(--danger-text); }
 .worker-overview-header p { margin: .25rem 0 0; color: var(--muted); font-size: .75rem; }
 .worker-overview-heading-actions { display: flex; align-items: center; gap: .45rem; }
 .worker-overview-heading-actions form { margin: 0; }
-.worker-overview-list { display: grid; gap: .7rem; margin-top: 1rem; }
+.worker-overview-list {
+  display: grid;
+  gap: .7rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
 .worker-overview-row { display: grid; gap: .65rem; padding: .85rem; border: 1px solid var(--line); border-left-width: .28rem; border-radius: .6rem; background: var(--surface-2); }
 .worker-overview-row.worker-overview-working { border-left-color: var(--success); background: color-mix(in srgb, var(--success) 9%, var(--surface)); }
 .worker-overview-row.worker-overview-preparing { border-left-color: var(--accent); }

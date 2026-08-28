@@ -5,6 +5,10 @@ using Highbyte.Wrighty.Processes;
 
 namespace Highbyte.Wrighty.Workers;
 
+public sealed record AgentProcessCallbacks(
+    Func<CancellationToken, Task>? ProcessStarted = null,
+    Func<string, CancellationToken, Task>? SessionStarted = null);
+
 public interface IAgentProcessRunner
 {
     Task<AgentRunResult> RunAsync(
@@ -16,16 +20,15 @@ public interface IAgentProcessRunner
         bool killOnCancellation,
         CancellationToken cancellationToken);
 
-    Task<AgentRunResult> RunAsync(
+    Task<AgentRunResult> RunWithCallbacksAsync(
         AgentInvocation invocation,
         IAgentAdapter adapter,
         TimeSpan timeout,
         IReadOnlyDictionary<string, string> grantEnvironment,
-        Func<CancellationToken, Task>? processStarted,
-        Func<string, CancellationToken, Task>? sessionStarted,
+        AgentProcessCallbacks callbacks,
         bool killOnCancellation,
         CancellationToken cancellationToken) =>
-        RunAsync(invocation, adapter, timeout, grantEnvironment, sessionStarted,
+        RunAsync(invocation, adapter, timeout, grantEnvironment, callbacks.SessionStarted,
             killOnCancellation, cancellationToken);
 }
 
@@ -39,16 +42,16 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
         Func<string, CancellationToken, Task>? sessionStarted,
         bool killOnCancellation,
         CancellationToken cancellationToken) =>
-        RunAsync(invocation, adapter, timeout, grantEnvironment, processStarted: null,
-            sessionStarted, killOnCancellation, cancellationToken);
+        RunWithCallbacksAsync(invocation, adapter, timeout, grantEnvironment,
+            new AgentProcessCallbacks(SessionStarted: sessionStarted),
+            killOnCancellation, cancellationToken);
 
-    public async Task<AgentRunResult> RunAsync(
+    public async Task<AgentRunResult> RunWithCallbacksAsync(
         AgentInvocation invocation,
         IAgentAdapter adapter,
         TimeSpan timeout,
         IReadOnlyDictionary<string, string> grantEnvironment,
-        Func<CancellationToken, Task>? processStarted,
-        Func<string, CancellationToken, Task>? sessionStarted,
+        AgentProcessCallbacks callbacks,
         bool killOnCancellation,
         CancellationToken cancellationToken)
     {
@@ -56,11 +59,11 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
             throw new TrackerException("ARGUMENT_INVALID", "--item-timeout must be positive.", 2);
 
         using var process = StartProcess(invocation, grantEnvironment);
-        if (processStarted is not null)
+        if (callbacks.ProcessStarted is not null)
         {
             try
             {
-                await processStarted(cancellationToken);
+                await callbacks.ProcessStarted(cancellationToken);
             }
             catch
             {
@@ -91,7 +94,7 @@ public sealed class AgentProcessRunner(IExecutableResolver executables) : IAgent
         };
         var capture = new SessionCapture();
         var stdoutTask = CaptureStdoutAsync(
-            process, writer, adapter, capture, sessionStarted, cancellationToken);
+            process, writer, adapter, capture, callbacks.SessionStarted, cancellationToken);
 
         using var timeoutCts = new CancellationTokenSource(timeout);
         using var combined = CancellationTokenSource.CreateLinkedTokenSource(

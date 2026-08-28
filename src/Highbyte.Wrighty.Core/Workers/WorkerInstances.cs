@@ -633,14 +633,17 @@ public sealed class JsonWorkerInstanceRegistry(
             {
                 if (disposed)
                     return;
+                string? nextItemTitle = null;
+                if (currentItemId is not null)
+                {
+                    nextItemTitle = currentItemTitle;
+                    if (string.Equals(current.CurrentItemId, currentItemId, StringComparison.Ordinal))
+                        nextItemTitle ??= current.CurrentItemTitle;
+                }
                 current = current with
                 {
                     CurrentItemId = currentItemId,
-                    CurrentItemTitle = currentItemId is null
-                        ? null
-                        : string.Equals(current.CurrentItemId, currentItemId, StringComparison.Ordinal)
-                            ? currentItemTitle ?? current.CurrentItemTitle
-                            : currentItemTitle,
+                    CurrentItemTitle = nextItemTitle,
                     CurrentAgent = currentAgent,
                     State = state,
                     LastHeartbeatAt = clock()

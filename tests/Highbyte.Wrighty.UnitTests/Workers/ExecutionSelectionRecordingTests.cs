@@ -248,24 +248,23 @@ public sealed class ExecutionSelectionRecordingTests : IDisposable
             CancellationToken cancellationToken) =>
             throw new NotSupportedException("The worker must use the process-start-aware overload.");
 
-        public async Task<AgentRunResult> RunAsync(
+        public async Task<AgentRunResult> RunWithCallbacksAsync(
             AgentInvocation invocation,
             IAgentAdapter adapter,
             TimeSpan timeout,
             IReadOnlyDictionary<string, string> grantEnvironment,
-            Func<CancellationToken, Task>? processStarted,
-            Func<string, CancellationToken, Task>? sessionStarted,
+            AgentProcessCallbacks callbacks,
             bool killOnCancellation,
             CancellationToken cancellationToken)
         {
             PhaseBeforeProcessStarted = (await backend.GetClaimOwnershipAsync(
                 config, id, cancellationToken)).ExecutionPhase;
-            Assert.NotNull(processStarted);
-            await processStarted(cancellationToken);
+            Assert.NotNull(callbacks.ProcessStarted);
+            await callbacks.ProcessStarted(cancellationToken);
             PhaseAfterProcessStarted = (await backend.GetClaimOwnershipAsync(
                 config, id, cancellationToken)).ExecutionPhase;
-            if (sessionStarted is not null)
-                await sessionStarted("session-phase", cancellationToken);
+            if (callbacks.SessionStarted is not null)
+                await callbacks.SessionStarted("session-phase", cancellationToken);
             return new AgentRunResult(AgentOutcome.Succeeded, "session-phase", "Needs a decision.");
         }
     }

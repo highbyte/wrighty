@@ -314,6 +314,15 @@ public sealed class OperationsListInput
     public string? ClaimState { get; set; }
 }
 
+public sealed class WorkerStopInput
+{
+    public string RunId { get; set; } = string.Empty;
+    public int ProcessId { get; set; }
+    public string? ProcessStartIdentity { get; set; }
+    public string HostKind { get; set; } = string.Empty;
+    public string Mode { get; set; } = string.Empty;
+}
+
 public sealed record OperationsListQuery(
     ItemSort Sort,
     string? Search,

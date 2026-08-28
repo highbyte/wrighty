@@ -61,17 +61,16 @@ public sealed class AgentProcessRunnerTests
             new Dictionary<string, string>());
         var started = false;
 
-        var result = await runner.RunAsync(
+        var result = await runner.RunWithCallbacksAsync(
             invocation,
             new CodexAgentAdapter(),
             TimeSpan.FromSeconds(5),
             new Dictionary<string, string>(),
-            processStarted: _ =>
-            {
-                started = true;
-                return Task.CompletedTask;
-            },
-            sessionStarted: null,
+            new AgentProcessCallbacks(ProcessStarted: _ =>
+                {
+                    started = true;
+                    return Task.CompletedTask;
+                }),
             killOnCancellation: true,
             CancellationToken.None);
 

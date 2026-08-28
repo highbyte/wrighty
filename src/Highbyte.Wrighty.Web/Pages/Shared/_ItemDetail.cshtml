@@ -69,10 +69,10 @@
   }
   else if (Model.OperationalStatus == OperationalStatuses.WorkerPreparing)
   {
-    <aside class="worker-state-callout worker-preparing" role="status">
+    <output class="worker-state-callout worker-preparing" aria-label="Worker preparing status">
       <strong>Worker preparing</strong>
       <span>The worker owns this item while it prepares the workspace and validates launch policy. No agent process has started yet.</span>
-    </aside>
+    </output>
   }
   else if (Model.OperationalStatus == OperationalStatuses.AgentActive)
   {

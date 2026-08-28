@@ -1,6 +1,6 @@
 @model WorkerOverviewPageModel
 @{
-  var running = Model.RunningWorkers;
+  var running = Model.RunningWorkers();
 }
 <header class="worker-overview-header" data-worker-overview-revision="@Model.Revision">
   <div>
@@ -41,10 +41,9 @@
 }
 else
 {
-  <div class="worker-overview-list" role="list" aria-label="Running workers">
-  @foreach (var worker in running)
+  <ul class="worker-overview-list" aria-label="Running workers">
+  @foreach (var instance in running.Select(worker => worker.Instance))
   {
-    var instance = worker.Instance;
     var hostedRun = Model.HostedWorkers.FirstOrDefault(value => value.RunId == instance.RunId);
     var ownedHere = hostedRun is not null;
     var externallyStarted = instance.HostKind == WorkerHostKind.CliProcess;
@@ -55,25 +54,28 @@ else
       Model.PendingStopRunId,
       instance.RunId,
       StringComparison.Ordinal);
-    var origin = externallyStarted
-      ? "Terminal or service"
-      : ownedHere
-        ? "This web console"
-        : "Another web console";
-    var stateLabel = pendingStop
-      ? isBusy ? "Stopping after current item" : "Stopping"
-      : hostedRun?.State == WebHostedWorkerState.WaitingForWorkspace
-        ? "Waiting for workspace"
-        : instance.State switch
-        {
-          WorkerInstanceState.PreparingItem => "Worker preparing",
-          WorkerInstanceState.RunningItem => "Agent working",
-          WorkerInstanceState.Draining => isBusy ? "Stopping after current item" : "Stopping",
-          WorkerInstanceState.StoppingNow => "Stopping agent now",
-          WorkerInstanceState.Finalizing => "Finalizing item",
-          WorkerInstanceState.Stopping => "Stopping",
-          _ => "Idle"
-        };
+    var origin = "Another web console";
+    if (externallyStarted)
+      origin = "Terminal or service";
+    else if (ownedHere)
+      origin = "This web console";
+
+    var stateLabel = instance.State switch
+    {
+      WorkerInstanceState.PreparingItem => "Worker preparing",
+      WorkerInstanceState.RunningItem => "Agent working",
+      WorkerInstanceState.Draining => "Stopping",
+      WorkerInstanceState.StoppingNow => "Stopping agent now",
+      WorkerInstanceState.Finalizing => "Finalizing item",
+      WorkerInstanceState.Stopping => "Stopping",
+      _ => "Idle"
+    };
+    if (hostedRun?.State == WebHostedWorkerState.WaitingForWorkspace)
+      stateLabel = "Waiting for workspace";
+    if ((pendingStop || instance.State == WorkerInstanceState.Draining) && isBusy)
+      stateLabel = "Stopping after current item";
+    else if (pendingStop)
+      stateLabel = "Stopping";
     var stateClass = instance.State switch
     {
       WorkerInstanceState.PreparingItem => "preparing",
@@ -82,23 +84,29 @@ else
         WorkerInstanceState.Finalizing or WorkerInstanceState.Stopping => "stopping",
       _ => "idle"
     };
-    var stopTitle = externallyStarted
-      ? "Stop externally started worker?"
-      : ownedHere
-        ? isBusy ? "Stop after the current item?" : "Stop worker?"
-        : "Stop worker hosted by another web console?";
-    var stopPrefix = externallyStarted
-      ? "This worker was started outside the web console. Wrighty will ask that terminal or service-owned process to stop cooperatively. If a service manager restarts it, stop the service there too. "
-      : ownedHere
-        ? string.Empty
-        : "Another web-console process owns this worker. Wrighty will ask that process to stop it cooperatively. ";
-    var stopMessage = stopPrefix + (isBusy
-      ? "The active agent session will be allowed to finish, including Wrighty's bookkeeping, and the worker will not claim another item."
-      : "The idle worker will stop without claiming another item.");
+    var stopTitle = "Stop worker hosted by another web console?";
+    var stopPrefix = "Another web-console process owns this worker. Wrighty will ask that process to stop it cooperatively. ";
+    if (externallyStarted)
+    {
+      stopTitle = "Stop externally started worker?";
+      stopPrefix = "This worker was started outside the web console. Wrighty will ask that terminal or service-owned process to stop cooperatively. If a service manager restarts it, stop the service there too. ";
+    }
+    else if (ownedHere)
+    {
+      stopTitle = "Stop worker?";
+      stopPrefix = string.Empty;
+      if (isBusy)
+        stopTitle = "Stop after the current item?";
+    }
+    var stopMessage = stopPrefix + "The idle worker will stop without claiming another item.";
+    if (isBusy)
+      stopMessage = stopPrefix + "The active agent session will be allowed to finish, including Wrighty's bookkeeping, and the worker will not claim another item.";
+    var disabledStopTitle = "This worker version does not advertise safe cooperative stop controls.";
+    if (pendingStop)
+      disabledStopTitle = "The worker is stopping.";
 
-    <article class="worker-overview-row worker-overview-@stateClass"
-             role="listitem"
-             aria-label="@instance.InvocationSummary, @stateLabel">
+    <li class="worker-overview-row worker-overview-@stateClass"
+        aria-label="@instance.InvocationSummary, @stateLabel">
       <div class="worker-overview-row-heading">
         <div>
           <strong title="@instance.InvocationSummary">@instance.InvocationSummary</strong>
@@ -156,20 +164,23 @@ else
         {
           <button type="button"
                   disabled
-                  title="@(pendingStop ? "The worker is stopping." : "This worker version does not advertise safe cooperative stop controls.")">Stop</button>
+                  title="@disabledStopTitle">Stop</button>
         }
         <button type="button"
                 data-worker-details-run-id="@instance.RunId">Details</button>
       </div>
-    </article>
+    </li>
   }
-  </div>
+  </ul>
 }
 
 @if (Model.UnavailableCount > 0)
 {
+  var unavailableMessage = $"{Model.UnavailableCount} worker registrations need attention.";
+  if (Model.UnavailableCount == 1)
+    unavailableMessage = "1 worker registration needs attention.";
   <footer class="worker-overview-footer">
-    <span>@Model.UnavailableCount worker registration@(Model.UnavailableCount == 1 ? " needs" : "s need") attention.</span>
+    <span>@unavailableMessage</span>
     <button type="button" data-open-worker-processes>View all in Operations</button>
   </footer>
 }

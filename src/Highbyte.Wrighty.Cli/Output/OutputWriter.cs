@@ -27,6 +27,7 @@ public sealed class OutputWriter(
     TextWriter error,
     Func<DateTimeOffset>? clock = null)
 {
+    private const string AgentFallback = "agent";
     private readonly Func<DateTimeOffset> now = clock ?? (() => DateTimeOffset.UtcNow);
 
     private static readonly string[] PartialErrorDetailKeys =
@@ -1732,17 +1733,17 @@ public sealed class OutputWriter(
     {
         OperationalStatuses.NeedsAttention => "!attention",
         OperationalStatuses.WorkerPreparing =>
-            $"preparing:{value.Claim.Agent ?? "agent"}",
+            $"preparing:{value.Claim.Agent ?? AgentFallback}",
         OperationalStatuses.AgentActive when IsWorkerRunClaim(value) =>
-            $"processing:{value.Claim.Agent ?? "agent"}",
-        OperationalStatuses.AgentActive => $"claimed:{value.Claim.Agent ?? "agent"}",
-        OperationalStatuses.Queued => $"queued:{value.Session?.Agent ?? "agent"}",
+            $"processing:{value.Claim.Agent ?? AgentFallback}",
+        OperationalStatuses.AgentActive => $"claimed:{value.Claim.Agent ?? AgentFallback}",
+        OperationalStatuses.Queued => $"queued:{value.Session?.Agent ?? AgentFallback}",
         OperationalStatuses.RetryScheduled => value.Session?.Dispatch is { } dispatch
             ? $"retry:{dispatch.NotBefore.ToLocalTime():HH:mm}"
             : "retry",
         OperationalStatuses.HandoffQueued =>
-            $"handoff:{value.Session?.Dispatch?.Agent ?? "agent"}",
-        OperationalStatuses.PausedSession => $"paused:{value.Session?.Agent ?? "agent"}",
+            $"handoff:{value.Session?.Dispatch?.Agent ?? AgentFallback}",
+        OperationalStatuses.PausedSession => $"paused:{value.Session?.Agent ?? AgentFallback}",
         OperationalStatuses.Completed => "completed",
         OperationalStatuses.HumanEditing => "human",
         OperationalStatuses.AutomationActive => "automation",
@@ -1763,7 +1764,7 @@ public sealed class OutputWriter(
             : "Retry scheduled",
         OperationalStatuses.HandoffQueued => value.Session?.Dispatch is { } dispatch
             ? $"{AgentLabel(dispatch.SessionAgent) ?? "Agent"} → " +
-              $"{AgentLabel(dispatch.Agent) ?? "agent"}"
+              $"{AgentLabel(dispatch.Agent) ?? AgentFallback}"
             : "Handoff queued",
         OperationalStatuses.PausedSession => "Session retained",
         OperationalStatuses.Completed => "Completed",

@@ -46,15 +46,16 @@ internal static class WorkerInstanceEventProjection
             or "timed-out" or "rejected" or "retry-scheduled" or "interrupted";
         if ((preparing || running) && value.ItemId is not null)
         {
+            var state = WorkerInstanceState.RunningItem;
+            if (control.IntakeClosed)
+                state = WorkerInstanceState.Draining;
+            else if (preparing)
+                state = WorkerInstanceState.PreparingItem;
             return new WorkerInstanceEventState(
                 value.ItemId,
                 value.ItemTitle,
                 value.Agent,
-                control.IntakeClosed
-                    ? WorkerInstanceState.Draining
-                    : preparing
-                        ? WorkerInstanceState.PreparingItem
-                        : WorkerInstanceState.RunningItem);
+                state);
         }
         if (!terminal)
             return null;
@@ -293,8 +294,7 @@ public sealed class WorkerRunHost(
                     null,
                     WorkerInstanceState.Finalizing,
                     warningState,
-                    callbacks.Warn,
-                    CancellationToken.None);
+                    callbacks.Warn);
             }
             await pollingStop.CancelAsync();
             try
@@ -405,8 +405,7 @@ public sealed class WorkerRunHost(
                 projected.Agent,
                 projected.State,
                 warningState,
-                warn,
-                CancellationToken.None);
+                warn);
         }
         await emit(value);
     }
@@ -418,8 +417,7 @@ public sealed class WorkerRunHost(
         string? agent,
         WorkerInstanceState state,
         RegistryWarningState warningState,
-        Func<string, Task>? warn,
-        CancellationToken cancellationToken)
+        Func<string, Task>? warn)
     {
         try
         {
@@ -428,7 +426,7 @@ public sealed class WorkerRunHost(
                 itemTitle,
                 agent,
                 state,
-                cancellationToken);
+                CancellationToken.None);
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)

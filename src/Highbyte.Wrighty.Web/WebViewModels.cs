@@ -535,11 +535,12 @@ public sealed record WorkerOverviewPageModel(
         }
     }
 
-    public IReadOnlyList<WorkerInstanceStatus> RunningWorkers => Workers
+    public IReadOnlyList<WorkerInstanceStatus> RunningWorkers() => Workers
         .Where(worker => worker.Liveness == WorkerInstanceLiveness.Running)
         .ToArray();
 
-    public int UnavailableCount => Workers.Count - RunningWorkers.Count;
+    public int UnavailableCount => Workers.Count(worker =>
+        worker.Liveness != WorkerInstanceLiveness.Running);
 }
 
 public sealed record OperationsPageModel(

@@ -30,6 +30,7 @@ public sealed class IndexModel(
     private const int MaximumBodyLength = 1_000_000;
     private const string ArgumentInvalid = "ARGUMENT_INVALID";
     private const string ContextApprovalPartial = "Shared/_ContextApproval";
+    private const string WorkerOverviewPartial = "Shared/_WorkerOverview";
     private const string QueueActionId = "queue";
     private const string DequeueActionId = "dequeue";
     private const string ResumeActionId = "resume";
@@ -413,7 +414,7 @@ public sealed class IndexModel(
         if (IsWorkerOverviewSurface(surface))
         {
             return Partial(
-                "Shared/_WorkerOverview",
+                WorkerOverviewPartial,
                 await WorkerOverviewAsync(
                     cancellationToken,
                     errorCode: result.Accepted ? null : result.Code,
@@ -433,68 +434,73 @@ public sealed class IndexModel(
     }
 
     public async Task<IActionResult> OnPostStopWorkerAsync(
-        string runId,
-        int processId,
-        string? processStartIdentity,
-        string hostKind,
-        string mode,
+        [FromForm] WorkerStopInput stop,
         [FromForm] OperationsListInput input,
         string? surface,
         CancellationToken cancellationToken)
     {
-        if (!Enum.TryParse<WorkerHostKind>(hostKind, ignoreCase: true, out var parsedHostKind) ||
-            !Enum.TryParse<WorkerStopMode>(mode, ignoreCase: true, out var parsedMode))
+        if (!Enum.TryParse<WorkerHostKind>(stop.HostKind, ignoreCase: true, out var hostKind) ||
+            !Enum.TryParse<WorkerStopMode>(stop.Mode, ignoreCase: true, out var mode))
         {
-            if (IsWorkerOverviewSurface(surface))
-            {
-                return Partial(
-                    "Shared/_WorkerOverview",
-                    await WorkerOverviewAsync(
-                        cancellationToken,
-                        errorCode: "ARGUMENT_INVALID",
-                        errorMessage: "The worker stop request was invalid."));
-            }
-            return Partial(
-                "Shared/_Operations",
-                await OperationsAsync(
-                    cancellationToken,
-                    new OperationsFeedback(
-                        WorkerErrorCode: "ARGUMENT_INVALID",
-                        WorkerErrorMessage: "The worker stop request was invalid."),
-                    OperationsListQuery.Parse(input)));
+            var invalid = new HostedWorkerCommandResult(
+                false,
+                ArgumentInvalid,
+                "The worker stop request was invalid.");
+            return await WorkerStopResponseAsync(
+                invalid, input, surface, null, cancellationToken);
         }
 
-        HostedWorkerCommandResult result;
-        if (parsedHostKind == WorkerHostKind.WebHosted && hostedWorker.Owns(runId))
+        var result = await RequestWorkerStopAsync(stop, hostKind, mode, cancellationToken);
+        return await WorkerStopResponseAsync(
+            result,
+            input,
+            surface,
+            result.Accepted ? stop.RunId : null,
+            cancellationToken);
+    }
+
+    private async Task<HostedWorkerCommandResult> RequestWorkerStopAsync(
+        WorkerStopInput stop,
+        WorkerHostKind hostKind,
+        WorkerStopMode mode,
+        CancellationToken cancellationToken)
+    {
+        if (hostKind == WorkerHostKind.WebHosted && hostedWorker.Owns(stop.RunId))
         {
-            result = parsedMode == WorkerStopMode.Drain
-                ? hostedWorker.RequestDrain(runId)
-                : hostedWorker.RequestInterrupt(runId);
+            return mode == WorkerStopMode.Drain
+                ? hostedWorker.RequestDrain(stop.RunId)
+                : hostedWorker.RequestInterrupt(stop.RunId);
         }
-        else if (state.Config.SourcePath is not { } configurationPath)
+        if (state.Config.SourcePath is not { } configurationPath)
         {
-            result = new HostedWorkerCommandResult(
+            return new HostedWorkerCommandResult(
                 false,
                 "WORKER_CONTROL_UNAVAILABLE",
                 "The repository configuration path is unavailable.");
         }
-        else
-        {
-            var external = await workerInstances.RequestStopAsync(
-                configurationPath,
-                new WorkerStopTarget(
-                    runId,
-                    processId,
-                    processStartIdentity,
-                    parsedHostKind),
-                parsedMode,
-                cancellationToken);
-            result = new HostedWorkerCommandResult(
-                external.Accepted,
-                external.Code,
-                external.Message);
-        }
 
+        var external = await workerInstances.RequestStopAsync(
+            configurationPath,
+            new WorkerStopTarget(
+                stop.RunId,
+                stop.ProcessId,
+                stop.ProcessStartIdentity,
+                hostKind),
+            mode,
+            cancellationToken);
+        return new HostedWorkerCommandResult(
+            external.Accepted,
+            external.Code,
+            external.Message);
+    }
+
+    private async Task<IActionResult> WorkerStopResponseAsync(
+        HostedWorkerCommandResult result,
+        OperationsListInput input,
+        string? surface,
+        string? pendingStopRunId,
+        CancellationToken cancellationToken)
+    {
         var feedback = result.Accepted
             ? new OperationsFeedback()
             : new OperationsFeedback(
@@ -504,12 +510,12 @@ public sealed class IndexModel(
         if (IsWorkerOverviewSurface(surface))
         {
             return Partial(
-                "Shared/_WorkerOverview",
+                WorkerOverviewPartial,
                 await WorkerOverviewAsync(
                     cancellationToken,
                     errorCode: result.Accepted ? null : result.Code,
                     errorMessage: result.Accepted ? null : result.Message,
-                    pendingStopRunId: result.Accepted ? runId : null));
+                    pendingStopRunId: pendingStopRunId));
         }
         return Partial(
             "Shared/_Operations",
@@ -2084,7 +2090,7 @@ public sealed class IndexModel(
             return StatusCode(StatusCodes.Status204NoContent);
 
         Response.Headers.ETag = etag;
-        return Partial("Shared/_WorkerOverview", overview);
+        return Partial(WorkerOverviewPartial, overview);
     }
 
     public async Task<IActionResult> OnGetItemAsync(string id, CancellationToken cancellationToken)

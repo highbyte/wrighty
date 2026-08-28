@@ -91,11 +91,12 @@ export function dismissHeaderPopovers(doc, target) {
   // menu cannot contain the now-detached target, but target.closest() still identifies which kind
   // of menu the click came from. Keep that replacement open while closing other menu types.
   const sourceMenu = target.closest?.(".agents-menu, .worker-menu");
-  const sourceMenuClass = sourceMenu?.classList?.contains("agents-menu")
-    ? "agents-menu"
-    : sourceMenu?.classList?.contains("worker-menu")
-      ? "worker-menu"
-      : null;
+  let sourceMenuClass = null;
+  if (sourceMenu?.classList?.contains("agents-menu")) {
+    sourceMenuClass = "agents-menu";
+  } else if (sourceMenu?.classList?.contains("worker-menu")) {
+    sourceMenuClass = "worker-menu";
+  }
   let closed = 0;
   doc.querySelectorAll(".agents-menu[open], .worker-menu[open]").forEach(menu => {
     if (menu === sourceMenu || menu.contains(target) ||

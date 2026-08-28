@@ -45,6 +45,7 @@ public sealed class WorkerService(
     // The lifecycle event name, distinct from the WorkerDispatchStates value of the same text: one
     // is the emitted event, the other the published item state.
     private const string NeedsAttentionEvent = "needs-attention";
+    private const string PreparingEvent = "preparing";
 
     /// <summary>Emitted whenever a claim turned out to be stale, expired, or owned elsewhere.</summary>
     private const string FencedEvent = "fenced";
@@ -685,7 +686,7 @@ public sealed class WorkerService(
             throw new TrackerException("AGENT_REQUIRED",
                 "An eligible item did not resolve to a supported agent.", 2);
         await emit(new WorkerEvent(
-            "preparing",
+            PreparingEvent,
             selectedDetail.Id.Value,
             selectedAgent,
             ItemTitle: selectedDetail.Title));
@@ -1198,7 +1199,7 @@ public sealed class WorkerService(
             ExecutionPhase: ClaimExecutionPhases.Preparing);
         var claim = await tracker.ClaimAsync(config, id, context, cancellationToken);
         await emit(new WorkerEvent(
-            "preparing",
+            PreparingEvent,
             detail.Id.Value,
             agentName,
             ItemTitle: detail.Title));
@@ -1280,7 +1281,7 @@ public sealed class WorkerService(
         var claim = await tracker.TakeoverAsync(config, id, takeoverContext,
             currentClaimToken, cancellationToken);
         await emit(new WorkerEvent(
-            "preparing",
+            PreparingEvent,
             detail.Id.Value,
             agentName,
             ItemTitle: detail.Title));
@@ -1381,7 +1382,7 @@ public sealed class WorkerService(
         var claim = await tracker.ClaimAsync(
             config, detail.Id, context, cancellationToken);
         await emit(new WorkerEvent(
-            "preparing",
+            PreparingEvent,
             detail.Id.Value,
             agentName,
             ItemTitle: detail.Title));
@@ -1906,7 +1907,7 @@ public sealed class WorkerService(
         var (claimantId, claimContext, grant, handle) = await AcquireHandoffClaimAsync(
             launch, adapter, cancellationToken);
         await emit(new WorkerEvent(
-            "preparing",
+            PreparingEvent,
             detail.Id.Value,
             targetAgent,
             ItemTitle: detail.Title));
@@ -2787,27 +2788,28 @@ public sealed class WorkerService(
                 new EndedRun(detail, agentName, grant, workspace, result, sessionId),
                 adapter, emit, cancellationToken, recoveryAttempt);
 
-        Task<AgentRunResult> RunAgentProcessAsync() => processes.RunAsync(
+        Task<AgentRunResult> RunAgentProcessAsync() => processes.RunWithCallbacksAsync(
             invocation,
             adapter,
             options.ItemTimeout,
             environment,
-            token => RecordAgentProcessStartedAsync(
-                config, detail, agentName, workspace, grant, token),
-            (sessionId, token) =>
-            {
-                observation.ObservedSessionId = sessionId;
-                if (invocationKind == AgentInvocationKind.Resume &&
-                    expectedSessionId is not null &&
-                    !SessionIdsEqual(expectedSessionId, sessionId))
+            new AgentProcessCallbacks(
+                token => RecordAgentProcessStartedAsync(
+                    config, detail, agentName, workspace, grant, token),
+                (sessionId, token) =>
                 {
-                    observation.UnexpectedSessionId = sessionId;
-                    return Task.CompletedTask;
-                }
-                return RecordSessionAsync(
-                    config, detail, agentName, workspace, grant, sessionId, token,
-                    fenceState, runCts, emit, run.Selection);
-            },
+                    observation.ObservedSessionId = sessionId;
+                    if (invocationKind == AgentInvocationKind.Resume &&
+                        expectedSessionId is not null &&
+                        !SessionIdsEqual(expectedSessionId, sessionId))
+                    {
+                        observation.UnexpectedSessionId = sessionId;
+                        return Task.CompletedTask;
+                    }
+                    return RecordSessionAsync(
+                        config, detail, agentName, workspace, grant, sessionId, token,
+                        fenceState, runCts, emit, run.Selection);
+                }),
             options.OnFenced == FencedAction.Kill,
             runCts.Token);
     }
