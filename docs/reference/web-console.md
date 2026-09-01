@@ -525,9 +525,13 @@ git probe is bounded to a single item.
 
 The web command serves all browser assets from the executable and makes no CDN requests. The server
 stops with Ctrl+C. If it owns a hosted worker, shutdown interrupts an active agent and gives the
-item finalizer a bounded window rather than waiting indefinitely for a drain. Failed web requests are
-logged to the same terminal with the HTTP method, safe request target, status, Wrighty error code,
-and exception details. Launch and claim tokens are never logged. The authenticated web console header
+item finalizer a bounded window rather than waiting indefinitely for a drain. Failed web requests
+are written to standard error with a severity, HTTP method, allowlisted safe request target,
+status, Wrighty error code, and exception details. Client failures are warnings and server failures
+are errors, so log collectors can filter and route them independently. `wrighty web` has no
+`--log-file` option; redirect standard error or let the process or service manager collect it.
+See [Diagnostics and log capture](logging.md) for examples. Launch and claim tokens are never
+logged. The authenticated web console header
 intentionally displays the local OS hostname and workspace root; error responses continue to redact
 them. Agents and
 scripts should continue to use the stable CLI/JSON contract rather than automate this
