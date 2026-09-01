@@ -18,6 +18,8 @@ first-run guide. These pages are the authority for options, guarantees, and edge
   skills, headless work, session resume, Desktop opening, and handoff.
 - [Autonomous worker mode](worker.md) — eligibility, workspace modes, needs-attention and
   requeue, session resume, and the verified vendor capability matrix.
+- [Diagnostics and log capture](logging.md) — stdout/stderr boundaries, relevant command options,
+  machine-safe capture, and current native-logging limitations.
 - [Execution profiles](execution-profiles.md) — choosing a model and reasoning effort per run
   without work items naming a vendor model.
 - [Usage recovery and agent handoff](usage-recovery-and-agent-handoff.md) — what happens when a

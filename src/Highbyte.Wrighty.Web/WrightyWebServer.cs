@@ -19,6 +19,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Highbyte.Wrighty.Web;
 
@@ -39,7 +40,8 @@ public sealed record WrightyWebServerDependencies(
     WorkerService? WorkerService = null,
     ILocalHostNameProvider? LocalHostNameProvider = null,
     AgentRegistry? AgentRegistry = null,
-    IWebSkillMaintenance? SkillMaintenance = null);
+    IWebSkillMaintenance? SkillMaintenance = null,
+    ILoggerFactory? LoggerFactory = null);
 
 public sealed record WebAgentSessionServices(
     IWorkspaceInventory WorkspaceInventory,
@@ -71,6 +73,11 @@ public sealed class WrightyWebServer(
     public const string TokenHeader = "X-Wrighty-Token";
     private const string JavaScriptContentType = "text/javascript; charset=utf-8";
     private const long MaximumRequestBodySize = 1_100_000;
+    private readonly ILoggerFactory loggerFactory =
+        dependencies.LoggerFactory ?? NullLoggerFactory.Instance;
+    private readonly ILogger<WrightyWebServer> diagnostics =
+        (dependencies.LoggerFactory ?? NullLoggerFactory.Instance)
+        .CreateLogger<WrightyWebServer>();
 
     public async Task RunAsync(
         WebServerOptions options,
@@ -105,10 +112,11 @@ public sealed class WrightyWebServer(
             dependencies.WorkerService,
             dependencies.WorkerInstanceRegistry ?? NoOpWorkerInstanceRegistry.Instance,
             state);
-        var diagnostics = new WebDiagnostics(output);
-        var builder = CreateBuilder(endpoint, state, hostedWorker, diagnostics);
+        var requestDiagnostics = new WebDiagnostics(
+            loggerFactory.CreateLogger<WebDiagnostics>());
+        var builder = CreateBuilder(endpoint, state, hostedWorker, requestDiagnostics);
         await using var application = builder.Build();
-        ConfigureApplication(application, state, diagnostics);
+        ConfigureApplication(application, state, requestDiagnostics);
 
         await application.StartAsync(cancellationToken);
         var origin = ListeningUrl(application, endpoint);
@@ -370,7 +378,7 @@ public sealed class WrightyWebServer(
         try { browserLauncher.Open(launchUrl); }
         catch (Exception exception)
         {
-            await output.WriteLineAsync($"warning: Could not open the default browser: {exception.Message}");
+            WebDiagnosticEvents.BrowserLaunchFailed(diagnostics, exception);
         }
     }
 

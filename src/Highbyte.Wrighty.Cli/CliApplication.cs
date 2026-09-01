@@ -15,6 +15,8 @@ using Highbyte.Wrighty.Importing;
 using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Web;
 using Highbyte.Wrighty.Workers;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using System.Text.Json;
 using static Highbyte.Wrighty.Text.Grammar;
 
@@ -51,8 +53,11 @@ public sealed partial class CliApplication(
     Workers.AgentModelDiscoveries? modelDiscoveries = null,
     StorageLocationCatalog? storageLocationCatalog = null,
     AgentRegistry? agentRegistry = null,
-    IWebSkillMaintenance? skillMaintenance = null)
+    IWebSkillMaintenance? skillMaintenance = null,
+    ILogger<CliApplication>? logger = null)
 {
+    private readonly ILogger<CliApplication> diagnostics =
+        logger ?? NullLogger<CliApplication>.Instance;
     private readonly OutputWriter writer = new(output, error, clock);
     private readonly Func<bool> isInputRedirected = inputIsRedirected ?? (() => Console.IsInputRedirected);
     private readonly IWorkItemTextEditor editor = workItemEditor ?? new SystemWorkItemTextEditor();
@@ -124,19 +129,16 @@ public sealed partial class CliApplication(
                 .ToArray();
         }
 
-        var styler = new WorkerTerminalStyler(terminals, WorkerColorMode.Auto);
         foreach (var group in installations
                      .GroupBy(installation => installation.AgentSelection, StringComparer.OrdinalIgnoreCase)
                      .Where(group => group.Count(installation =>
                          installation.State != WebSkillInstallationState.Missing) > 1))
         {
             var sample = group.First();
-            await error.WriteLineAsync(
-                $"{styler.WarningPrefix()} Both project and user Wrighty skills are installed for " +
-                $"{sample.AgentLabel}. Agent hosts resolve duplicate skill names differently. " +
-                $"Remove one with 'wrighty skill uninstall --agent {sample.AgentSelection} " +
-                $"--scope project' or 'wrighty skill uninstall --agent {sample.AgentSelection} " +
-                "--scope user'.");
+            CliDiagnostics.DuplicateSkillInstallations(
+                diagnostics,
+                sample.AgentLabel,
+                sample.AgentSelection);
         }
         foreach (var installation in installations.Where(candidate => candidate.State is
                      WebSkillInstallationState.Outdated or
@@ -149,10 +151,14 @@ public sealed partial class CliApplication(
             var versions = installation.State == WebSkillInstallationState.Outdated
                 ? $" (installed {installation.InstalledVersion ?? "unknown"}; bundled {installation.BundledVersion})"
                 : string.Empty;
-            await error.WriteLineAsync(
-                $"{styler.WarningPrefix()} The {installation.Scope} Wrighty skill for {installation.AgentLabel} at " +
-                $"'{installation.Path}' is {installation.State.ToString().ToLowerInvariant()}{versions}. " +
-                $"Run '{command}'.");
+            CliDiagnostics.SkillNeedsAttention(
+                diagnostics,
+                installation.Scope,
+                installation.AgentLabel,
+                installation.Path,
+                installation.State.ToString().ToLowerInvariant(),
+                versions,
+                command);
         }
     }
 
@@ -1546,7 +1552,11 @@ public sealed partial class CliApplication(
             control,
             new WorkerRunCallbacks(
                 ordinaryOutput,
-                message => error.WriteLineAsync($"warning: {message}")),
+                message =>
+                {
+                    CliDiagnostics.WorkerRuntimeWarning(diagnostics, message);
+                    return Task.CompletedTask;
+                }),
             cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         return summary;
@@ -4896,7 +4906,7 @@ public sealed partial class CliApplication(
         }
     }
 
-    private async Task<AgentExecutionContext> ResolveAgentContextAsync(
+    private Task<AgentExecutionContext> ResolveAgentContextAsync(
         ParseResult parseResult,
         AgentOptionSet options,
         string? defaultClaimantKind = null)
@@ -4910,10 +4920,10 @@ public sealed partial class CliApplication(
             parseResult.GetValue(options.ClaimToken)));
         if (context.Warning is not null)
         {
-            await error.WriteLineAsync($"warning: {context.Warning}");
+            CliDiagnostics.AgentContextWarning(diagnostics, context.Warning);
         }
 
-        return context;
+        return Task.FromResult(context);
     }
 
     private AgentOptionSet AgentOptions() => new(

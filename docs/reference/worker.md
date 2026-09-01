@@ -578,10 +578,15 @@ capability remain plain text.
 
 Wrighty writes worker lifecycle events and heartbeats to standard output. This includes lifecycle
 events classified as warnings or dangers, such as `needs-attention`, `failed`, and `timed-out`.
-Separate CLI safety and diagnostic warnings, and command errors, go to standard error. Combining
-the streams is convenient for a chronological human-readable log, but loses that distinction.
-Wrighty does not create, rotate, or retain conventional log files itself, and intentionally does
-not log the agent transcript, model reasoning, or tool calls.
+CLI safety warnings and command errors use the explicit standard-error command channel. Internal
+operational diagnostics also go to standard error, with severity and named details that log
+collectors can filter and route without changing standard output. `--json` therefore keeps stdout
+as valid NDJSON even when diagnostics are emitted, while `--color` continues to control worker
+event presentation rather than diagnostic routing. Combining the streams is convenient for a
+chronological human-readable log, but loses that distinction. Wrighty has no `--log-file` option;
+it does not create, rotate, or retain conventional log files itself, or log the agent transcript,
+model reasoning, tool calls, secrets, or environment values. See
+[Diagnostics and log capture](logging.md) for the complete stream contract and capture examples.
 
 Use `--color never` for durable human-readable logs, or `--color always` when an explicit consumer
 such as `less -R` should receive ANSI sequences:

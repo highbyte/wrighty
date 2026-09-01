@@ -1,41 +1,47 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 
 namespace Highbyte.Wrighty.Web;
 
-internal sealed class WebDiagnostics(TextWriter output)
+internal sealed class WebDiagnostics(ILogger<WebDiagnostics> logger)
 {
     private const string FailureKey = "wrighty.web.failure";
-    private readonly SemaphoreSlim writeLock = new(1, 1);
 
     public static void RetainFailure(HttpContext context, string code, Exception exception) =>
         context.Items[FailureKey] = new WebFailure(code, exception);
 
-    public async Task LogFailureAsync(HttpContext context)
+    public Task LogFailureAsync(HttpContext context)
     {
         if (context.Response.StatusCode < StatusCodes.Status400BadRequest)
-            return;
+            return Task.CompletedTask;
 
         var failure = context.Items.TryGetValue(FailureKey, out var value)
             ? value as WebFailure
             : null;
         var code = failure?.Code ?? $"HTTP_{context.Response.StatusCode}";
         var target = RequestTarget(context.Request);
-        var message =
-            $"web error: {DateTimeOffset.UtcNow:O} {context.Request.Method} {target} -> " +
-            $"{context.Response.StatusCode} {code}";
-        if (failure is not null)
-            message += $"{Environment.NewLine}{failure.Exception}";
+        if (context.Response.StatusCode >= StatusCodes.Status500InternalServerError)
+        {
+            WebDiagnosticEvents.ServerRequestFailed(
+                logger,
+                context.Request.Method,
+                target,
+                context.Response.StatusCode,
+                code,
+                failure?.Exception);
+        }
+        else
+        {
+            WebDiagnosticEvents.ClientRequestFailed(
+                logger,
+                context.Request.Method,
+                target,
+                context.Response.StatusCode,
+                code,
+                failure?.Exception);
+        }
 
-        await writeLock.WaitAsync();
-        try
-        {
-            await output.WriteLineAsync(message);
-            await output.FlushAsync();
-        }
-        finally
-        {
-            writeLock.Release();
-        }
+        return Task.CompletedTask;
     }
 
     private static string RequestTarget(HttpRequest request)
@@ -55,4 +61,39 @@ internal sealed class WebDiagnostics(TextWriter output)
     }
 
     private sealed record WebFailure(string Code, Exception Exception);
+}
+
+internal static partial class WebDiagnosticEvents
+{
+    [LoggerMessage(
+        EventId = 2001,
+        Level = LogLevel.Warning,
+        Message = "Web request {RequestMethod} {RequestTarget} returned {StatusCode} {ErrorCode}.")]
+    public static partial void ClientRequestFailed(
+        ILogger logger,
+        string requestMethod,
+        string requestTarget,
+        int statusCode,
+        string errorCode,
+        Exception? exception);
+
+    [LoggerMessage(
+        EventId = 2002,
+        Level = LogLevel.Error,
+        Message = "Web request {RequestMethod} {RequestTarget} returned {StatusCode} {ErrorCode}.")]
+    public static partial void ServerRequestFailed(
+        ILogger logger,
+        string requestMethod,
+        string requestTarget,
+        int statusCode,
+        string errorCode,
+        Exception? exception);
+
+    [LoggerMessage(
+        EventId = 2003,
+        Level = LogLevel.Warning,
+        Message = "Could not open the default browser.")]
+    public static partial void BrowserLaunchFailed(
+        ILogger logger,
+        Exception exception);
 }

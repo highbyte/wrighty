@@ -19,6 +19,8 @@ using Highbyte.Wrighty.Storage;
 using Highbyte.Wrighty.Settings;
 using Highbyte.Wrighty.Workers;
 using Highbyte.Wrighty.UnitTests.Workers;
+using Highbyte.Wrighty.UnitTests.Diagnostics;
+using Microsoft.Extensions.Logging;
 using System.Text.Json;
 
 namespace Highbyte.Wrighty.UnitTests.Cli;
@@ -1947,12 +1949,25 @@ public sealed class CliApplicationTests : IDisposable
     public async Task Worker_json_is_valid_ndjson_and_never_contains_ansi(string color)
     {
         var output = new StringWriter();
+        var logs = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
         var application = Application(
             new RecordingBackend(),
             new StringReader(string.Empty),
             output,
             inputRedirected: true,
-            terminalCapabilities: Terminals(outputAnsi: true));
+            terminalCapabilities: Terminals(outputAnsi: true),
+            skillMaintenance: new FixedWebSkillMaintenance([
+                new WebSkillInstallation(
+                    "codex,copilot,opencode",
+                    "Codex, Copilot, OpenCode",
+                    "user",
+                    "/home/test/.agents/skills/wrighty",
+                    WebSkillInstallationState.Outdated,
+                    "0.10.0",
+                    "0.16.0")
+            ]),
+            logger: loggerFactory.CreateLogger<CliApplication>());
 
         var exitCode = await application.InvokeAsync([
             "worker", "--dry-run", "--once", "--json", "--color", color
@@ -1960,6 +1975,8 @@ public sealed class CliApplicationTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.DoesNotContain('\u001b', output.ToString());
+        Assert.Contains(logs.Entries, entry => entry.EventId.Id == 1002);
+        Assert.DoesNotContain("Wrighty skill", output.ToString());
         foreach (var line in output.ToString().Split(
                      Environment.NewLine,
                      StringSplitOptions.RemoveEmptyEntries))
@@ -2543,6 +2560,8 @@ public sealed class CliApplicationTests : IDisposable
     public async Task Agent_facing_command_warns_about_skills_that_need_attention()
     {
         var error = new StringWriter();
+        var logs = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
         var skills = new FixedWebSkillMaintenance([
             new WebSkillInstallation(
                 "codex,copilot,opencode",
@@ -2570,21 +2589,29 @@ public sealed class CliApplicationTests : IDisposable
             terminalCapabilities: new TerminalCapabilities(
                 new TerminalStreamCapability(true, false),
                 new TerminalStreamCapability(false, true)),
-            skillMaintenance: skills);
+            skillMaintenance: skills,
+            logger: loggerFactory.CreateLogger<CliApplication>());
 
         var exitCode = await application.InvokeAsync(["web", "--no-open"]);
 
         Assert.Equal(0, exitCode);
-        Assert.StartsWith("\u001b[33mwarning:\u001b[0m", error.ToString());
-        Assert.Contains("user Wrighty skill for Codex, Copilot, OpenCode", error.ToString());
-        Assert.Contains("installed 0.10.0; bundled 0.16.0", error.ToString());
+        Assert.Equal(string.Empty, error.ToString());
+        Assert.Equal(2, logs.Entries.Count);
+        Assert.All(logs.Entries, entry =>
+        {
+            Assert.Equal(LogLevel.Warning, entry.Level);
+            Assert.Equal(1002, entry.EventId.Id);
+        });
+        var messages = string.Join(Environment.NewLine, logs.Entries.Select(entry => entry.Message));
+        Assert.Contains("user Wrighty skill for Codex, Copilot, OpenCode", messages);
+        Assert.Contains("installed 0.10.0; bundled 0.16.0", messages);
         Assert.Contains(
             "wrighty skill update --agent codex,copilot,opencode --scope user",
-            error.ToString());
-        Assert.Contains("project Wrighty skill for Claude", error.ToString());
+            messages);
+        Assert.Contains("project Wrighty skill for Claude", messages);
         Assert.Contains(
             "wrighty skill check --agent claude --scope project",
-            error.ToString());
+            messages);
         Assert.Equal(1, skills.Inspections);
     }
 
@@ -2592,6 +2619,8 @@ public sealed class CliApplicationTests : IDisposable
     public async Task Agent_facing_command_does_not_warn_for_current_or_missing_skills()
     {
         var error = new StringWriter();
+        var logs = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
         var application = Application(
             new RecordingBackend(),
             new StringReader(string.Empty),
@@ -2615,18 +2644,22 @@ public sealed class CliApplicationTests : IDisposable
                     WebSkillInstallationState.Missing,
                     null,
                     "0.16.0")
-            ]));
+            ]),
+            logger: loggerFactory.CreateLogger<CliApplication>());
 
         var exitCode = await application.InvokeAsync(["web", "--no-open"]);
 
         Assert.Equal(0, exitCode);
         Assert.Equal(string.Empty, error.ToString());
+        Assert.Empty(logs.Entries);
     }
 
     [Fact]
     public async Task Agent_facing_command_warns_when_both_skill_scopes_are_installed()
     {
         var error = new StringWriter();
+        var logs = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
         var application = Application(
             new RecordingBackend(),
             new StringReader(string.Empty),
@@ -2650,11 +2683,15 @@ public sealed class CliApplicationTests : IDisposable
                     WebSkillInstallationState.Current,
                     "0.16.0",
                     "0.16.0")
-            ]));
+            ]),
+            logger: loggerFactory.CreateLogger<CliApplication>());
 
         Assert.Equal(0, await application.InvokeAsync(["web", "--no-open"]));
-        Assert.Contains("Both project and user Wrighty skills are installed", error.ToString());
-        Assert.Contains("wrighty skill uninstall", error.ToString());
+        Assert.Equal(string.Empty, error.ToString());
+        var entry = Assert.Single(logs.Entries);
+        Assert.Equal(1001, entry.EventId.Id);
+        Assert.Contains("Both project and user Wrighty skills are installed", entry.Message);
+        Assert.Contains("wrighty skill uninstall", entry.Message);
     }
 
     [Fact]
@@ -2665,6 +2702,8 @@ public sealed class CliApplicationTests : IDisposable
             new UserSettings { EnabledAgents = ["claude"] },
             CancellationToken.None);
         var error = new StringWriter();
+        var logs = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
         var application = Application(
             new RecordingBackend(),
             new StringReader(string.Empty),
@@ -2682,10 +2721,12 @@ public sealed class CliApplicationTests : IDisposable
                     WebSkillInstallationState.Outdated,
                     "0.10.0",
                     "0.16.0")
-            ]));
+            ]),
+            logger: loggerFactory.CreateLogger<CliApplication>());
 
         Assert.Equal(0, await application.InvokeAsync(["web", "--no-open"]));
         Assert.Equal(string.Empty, error.ToString());
+        Assert.Empty(logs.Entries);
     }
 
     [Fact]
@@ -4250,7 +4291,8 @@ public sealed class CliApplicationTests : IDisposable
         Highbyte.Wrighty.Workers.AgentModelDiscoveries? modelDiscoveries = null,
         StorageLocationCatalog? storageLocationCatalog = null,
         AgentRegistry? agentRegistry = null,
-        IWebSkillMaintenance? skillMaintenance = null)
+        IWebSkillMaintenance? skillMaintenance = null,
+        ILogger<CliApplication>? logger = null)
     {
         var effectiveAgentRegistry = agentRegistry ?? BuiltInAgentRegistry.Create(
             new PathExecutableResolver());
@@ -4307,7 +4349,8 @@ public sealed class CliApplicationTests : IDisposable
             modelDiscoveries: modelDiscoveries,
             storageLocationCatalog: storageLocationCatalog,
             agentRegistry: effectiveAgentRegistry,
-            skillMaintenance: skillMaintenance);
+            skillMaintenance: skillMaintenance,
+            logger: logger);
     }
 
     private sealed class RecordingContextApprovalService : IContextApprovalService

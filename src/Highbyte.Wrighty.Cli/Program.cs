@@ -19,6 +19,7 @@ using Highbyte.Wrighty.Cli.Skills;
 using Highbyte.Wrighty.Cli.Output;
 using Highbyte.Wrighty.Web;
 using Highbyte.Wrighty.Workers;
+using Microsoft.Extensions.Logging;
 
 namespace Highbyte.Wrighty.Cli;
 
@@ -26,6 +27,7 @@ internal static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        using var loggerFactory = DiagnosticLogging.CreateFactory();
         var paths = new CachePaths(
             Environment.GetEnvironmentVariable("WRIGHTY_CACHE_DIR"));
         var userConfigPaths = new Highbyte.Wrighty.Settings.UserConfigPaths(
@@ -195,7 +197,8 @@ internal static class Program
                 new GitHubProjectUrlResolver(githubInitialization.GetProjectAsync),
                 worker,
                 AgentRegistry: agentRegistry,
-                SkillMaintenance: skillMaintenance));
+                SkillMaintenance: skillMaintenance,
+                LoggerFactory: loggerFactory));
         var application = new CliApplication(
             configLoader,
             initialization,
@@ -224,7 +227,8 @@ internal static class Program
             modelDiscoveries: modelDiscoveries,
             storageLocationCatalog: storageLocations,
             agentRegistry: agentRegistry,
-            skillMaintenance: skillMaintenance);
+            skillMaintenance: skillMaintenance,
+            logger: loggerFactory.CreateLogger<CliApplication>());
 
         using var shutdown = ShutdownSignals.Register();
         return await application.InvokeAsync(args, shutdown.Token);

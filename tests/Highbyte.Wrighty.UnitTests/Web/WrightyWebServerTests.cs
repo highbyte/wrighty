@@ -21,7 +21,9 @@ using Highbyte.Wrighty.Storage;
 using Highbyte.Wrighty.Web;
 using Highbyte.Wrighty.Workers;
 using Highbyte.Wrighty.UnitTests.Workers;
+using Highbyte.Wrighty.UnitTests.Diagnostics;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 using System.Security.Cryptography;
 
 namespace Highbyte.Wrighty.UnitTests.Web;
@@ -4926,7 +4928,9 @@ public sealed partial class WrightyWebServerTests : IDisposable
     [Fact]
     public async Task Dashboard_reports_invalid_documents_without_exposing_the_store_path()
     {
-        var host = await StartServer();
+        var logs = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+        var host = await StartServer(loggerFactory: loggerFactory);
         using var client = new HttpClient();
         Assert.Equal(
             "Press Ctrl+C to stop.",
@@ -4945,10 +4949,14 @@ public sealed partial class WrightyWebServerTests : IDisposable
         Assert.Contains("WORK_ITEM_DOCUMENT_INVALID", html);
         Assert.Contains("&lt;tracker&gt;", html);
         Assert.DoesNotContain(directory, html);
-        var log = await host.Output.ReadLineAsync(host.Cancellation.Token);
-        Assert.Contains("GET /?handler=Board -> 500 WORK_ITEM_DOCUMENT_INVALID", log);
-        Assert.Contains("TrackerException", log);
-        Assert.Contains(itemPath, log);
+        var log = Assert.Single(logs.Entries);
+        Assert.Equal(2002, log.EventId.Id);
+        Assert.Equal("GET", log.Properties["RequestMethod"]);
+        Assert.Equal("/?handler=Board", log.Properties["RequestTarget"]);
+        Assert.Equal(500, log.Properties["StatusCode"]);
+        Assert.Equal("WORK_ITEM_DOCUMENT_INVALID", log.Properties["ErrorCode"]);
+        Assert.IsType<TrackerException>(log.Exception);
+        Assert.Contains(itemPath, log.Exception.ToString());
         await host.Stop();
     }
 
@@ -6151,13 +6159,19 @@ public sealed partial class WrightyWebServerTests : IDisposable
     [Fact]
     public async Task Browser_launch_failure_is_reported_without_stopping_the_server()
     {
-        var host = await StartServer(browserLauncher: new ThrowingBrowserLauncher());
+        var logs = new RecordingLoggerProvider();
+        using var loggerFactory = LoggerFactory.Create(builder => builder.AddProvider(logs));
+        var host = await StartServer(
+            browserLauncher: new ThrowingBrowserLauncher(),
+            loggerFactory: loggerFactory);
         using var client = new HttpClient();
 
         Assert.Equal("Press Ctrl+C to stop.", await host.Output.ReadLineAsync(host.Cancellation.Token));
-        Assert.Equal(
-            "warning: Could not open the default browser: Browser unavailable",
-            await host.Output.ReadLineAsync(host.Cancellation.Token));
+        var entry = await logs.WaitForEntryAsync(host.Cancellation.Token);
+        Assert.Equal(2003, entry.EventId.Id);
+        Assert.Equal(LogLevel.Warning, entry.Level);
+        Assert.Equal("Could not open the default browser.", entry.Message);
+        Assert.Equal("Browser unavailable", entry.Exception?.Message);
         Assert.Equal("ok", (await client.GetStringAsync($"{host.Origin}/web/health")).Split('"')[3]);
         await host.Stop();
     }
@@ -6691,7 +6705,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
         IWebSkillMaintenance? skillMaintenance = null,
         IAgentRuntimeCatalog? agentRuntimeCatalog = null,
         IProviderCapacityProbeService? providerProbeService = null,
-        AgentModelDiscoveries? modelDiscoveries = null)
+        AgentModelDiscoveries? modelDiscoveries = null,
+        ILoggerFactory? loggerFactory = null)
     {
         Directory.CreateDirectory(directory);
         var config = new TrackerConfig
@@ -6982,7 +6997,8 @@ public sealed partial class WrightyWebServerTests : IDisposable
                     new CachePaths(Path.Combine(directory, ".worker-cache"))),
                 WorkerService: hostedWorker,
                 AgentRegistry: agentRegistry,
-                SkillMaintenance: skillMaintenance));
+                SkillMaintenance: skillMaintenance,
+                LoggerFactory: loggerFactory));
         var effectiveOptions = serverOptions ?? new WebServerOptions(0, openBrowser);
         var run = server.RunAsync(
             effectiveOptions,
