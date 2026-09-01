@@ -576,11 +576,17 @@ that the individual output stream is an interactive, ANSI-capable terminal. Stan
 standard error are detected independently. Redirected output and writers without declared terminal
 capability remain plain text.
 
+Wrighty writes worker lifecycle events and heartbeats to standard output. This includes lifecycle
+events classified as warnings or dangers, such as `needs-attention`, `failed`, and `timed-out`.
+Separate CLI safety and diagnostic warnings, and command errors, go to standard error. Combining
+the streams is convenient for a chronological human-readable log, but loses that distinction.
+Wrighty does not create, rotate, or retain conventional log files itself, and intentionally does
+not log the agent transcript, model reasoning, or tool calls.
+
 Use `--color never` for durable human-readable logs, or `--color always` when an explicit consumer
 such as `less -R` should receive ANSI sequences:
 
 ```shell
-wrighty worker --yes --color never >worker.log 2>&1 &
 wrighty worker --yes --color always | less -R
 ```
 
@@ -589,11 +595,77 @@ In automatic mode, the presence of `NO_COLOR` or `TERM=dumb` disables color. Exp
 deliberately writes ANSI sequences even when human output is redirected.
 
 `--json` always wins over color selection: every standard-output line remains unstyled JSON under
-`--color auto`, `always`, and `never`. A background NDJSON worker can be started safely with:
+`--color auto`, `always`, and `never`.
+
+### Common logging scenarios
+
+For terminal output only, run the worker normally:
+
+```shell
+wrighty worker --yes
+```
+
+```powershell
+wrighty worker --yes
+```
+
+To show human-readable output and append the combined streams to a log, use `tee`. Use
+`--color never` so the durable copy contains no ANSI escape sequences:
+
+```shell
+wrighty worker --yes --color never 2>&1 | tee -a worker.log
+```
+
+```powershell
+wrighty worker --yes --color never 2>&1 |
+    Tee-Object -FilePath worker.log -Append
+```
+
+A pipeline can otherwise hide Wrighty's exit code. In Bash, capture the first element of
+`PIPESTATUS` immediately after `tee`; in PowerShell, capture `$LASTEXITCODE` immediately after the
+pipeline:
+
+```bash
+wrighty worker --yes --color never 2>&1 | tee -a worker.log
+wrighty_status=${PIPESTATUS[0]}
+exit "$wrighty_status"
+```
+
+```powershell
+wrighty worker --yes --color never 2>&1 |
+    Tee-Object -FilePath worker.log -Append
+$wrightyExitCode = $LASTEXITCODE
+exit $wrightyExitCode
+```
+
+For background execution, detach standard input and redirect both streams so the worker does not
+depend on the launching terminal. The POSIX example appends a combined log. The PowerShell example
+uses separate files because `Start-Process` requires distinct standard-output and standard-error
+redirection targets; it replaces those files when the process starts rather than appending them:
+
+```shell
+nohup wrighty worker --yes --color never </dev/null >>worker.log 2>&1 &
+```
+
+```powershell
+Start-Process -FilePath wrighty -ArgumentList 'worker', '--yes', '--color', 'never' `
+    -RedirectStandardOutput worker.log -RedirectStandardError worker-errors.log
+```
+
+For machine processing, keep NDJSON standard output separate from diagnostic standard error:
 
 ```shell
 wrighty worker --yes --json >>worker.ndjson 2>>worker-errors.log &
 ```
+
+```powershell
+wrighty worker --yes --json 1>>worker.ndjson 2>>worker-errors.log
+```
+
+For a service-managed worker, leave both streams attached to the service manager and configure
+capture, rotation, retention, and forwarding there. Do not add shell redirection unless the service
+manager's documentation requires it; systemd, a container runtime, or a Windows service wrapper
+should own the log lifecycle.
 
 Color changes only the trusted event or warning prefix and resets immediately. Event names and
 all existing text remain present, while paths, arguments, messages, session IDs, and operator
