@@ -12,6 +12,7 @@ first-run guide. These pages are the authority for options, guarantees, and edge
   custom fields, and import.
 - [Claims and ownership](claims.md) — claimant attribution, the ownership rules, fencing
   guarantees per backend, recovery paths, and escape hatches.
+- [Action discovery](actions.md) — current actions, blocked alternatives, stable names, and JSON.
 - [Operator actions by surface](operator-actions.md) — task-oriented comparison of what the Local
   web console, GitHub, and CLI can view or perform, with links to the authoritative procedures.
 - [Supported agents and surfaces](supported-agents.md) — which agent families Wrighty supports for

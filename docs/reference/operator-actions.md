@@ -18,6 +18,9 @@ The three surfaces are:
 - **GitHub** — the issue, Project fields, labels, and Wrighty's single status comment.
 - **CLI** — works with both Local Markdown and GitHub.
 
+For a live item-specific catalogue, use `wrighty actions ID` or `wrighty actions ID --all --json`.
+See [Action discovery](actions.md) for its read-only contract and stable refusal reasons.
+
 ## State and authority
 
 Before acting, distinguish policy, portable lifecycle state, local operational state, and

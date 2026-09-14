@@ -212,6 +212,7 @@ public sealed partial class CliApplication(
         root.Subcommands.Add(BuildListCommand());
         root.Subcommands.Add(BuildStatusCommand());
         root.Subcommands.Add(BuildGetCommand());
+        root.Subcommands.Add(BuildActionsCommand());
         root.Subcommands.Add(BuildContextCommand());
         root.Subcommands.Add(BuildApproveCommand());
         root.Subcommands.Add(BuildApprovalWorkflowCommand());
@@ -2948,7 +2949,8 @@ public sealed partial class CliApplication(
                     value => tracker.FormatShort(config, value),
                     workspaceStatus,
                     PendingInterruptions(config).Any(value =>
-                        string.Equals(value.ItemId, id.Value, StringComparison.Ordinal)));
+                        string.Equals(value.ItemId, id.Value, StringComparison.Ordinal)),
+                    await DiscoverActionsAsync(config, item, cancellationToken));
             },
             cancellationToken));
         return command;
@@ -2978,6 +2980,10 @@ public sealed partial class CliApplication(
         var effectiveProviderCapacity = await EffectiveProviderCapacityAsync(config, cancellationToken);
         var configurationRevision = await StatusConfigurationRevisionAsync(config, cancellationToken);
 
+        var actions = new Dictionary<string, Actions.OperationalActionDiscovery>(StringComparer.Ordinal);
+        foreach (var item in items)
+            actions[item.Item.Id.Value] = await DiscoverActionsAsync(config, item, cancellationToken);
+
         await writer.WriteStatusAsync(
             items,
             workspaceStatuses,
@@ -2992,7 +2998,8 @@ public sealed partial class CliApplication(
                     ? []
                     : await workerInstances.ListAsync(config.SourcePath, cancellationToken),
                 configurationRevision,
-                PendingInterruptions(config)));
+                PendingInterruptions(config),
+                actions));
     }
 
     private async Task<IReadOnlyDictionary<string, WorkspaceStatusResult>> StatusWorkspaceStatusesAsync(

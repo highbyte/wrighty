@@ -1,5 +1,9 @@
 # Autonomous worker mode
 
+Use `wrighty actions ID` for current recovery alternatives and their availability.
+[Action discovery](actions.md) refreshes the advice captured in a worker handover without
+starting a worker or consuming a provider probe.
+
 `wrighty worker` schedules one explicitly eligible item at a time, claims it with a fenced handle,
 starts Claude Code, Codex, Copilot, or OpenCode headlessly, renews the claim for a fixed budget, and records
 the workspace and vendor session address. Wrighty is the scheduler; the vendor CLI remains the
