@@ -179,3 +179,9 @@ only for unresolved decisions that materially affect the result. Explicit tracke
 incomplete, but the skill does not present them as ready or enable automatic processing until the
 same assessment passes. Fresh worker sessions independently assess the approved context they
 receive; the skill does not stamp items with a reusable “verified” marker.
+
+The bundled skill supports board overview using configured workflow order, operational triage,
+shared action discovery, and scoped worker/pickup assessment. `list --json` keeps its `result` array
+and adds `listing` metadata: status order, archive/filter/limit scope, returned count, and whether
+the result may be truncated. See [worker discovery](workers.md). Update an installed skill through
+the existing `wrighty skill update` command to receive these workflows.

@@ -4,8 +4,12 @@ using Highbyte.Wrighty.Errors;
 
 namespace Highbyte.Wrighty.Workers;
 
+public sealed record WorkspaceLockObservation(string State, string? Detail = null);
+
 public interface IWorkspaceExecutionLock
 {
+    WorkspaceLockObservation Inspect(string workspacePath) => new("unknown", "Workspace lock inspection is unavailable.");
+
     ValueTask<IAsyncDisposable> AcquireAsync(
         string workspacePath,
         CancellationToken cancellationToken);
@@ -19,6 +23,28 @@ public sealed class FileWorkspaceExecutionLock(string? lockRoot = null) : IWorks
         UserScope());
 
     private readonly string root = lockRoot ?? DefaultRoot;
+
+    public WorkspaceLockObservation Inspect(string workspacePath)
+    {
+        try
+        {
+            var canonicalPath = CanonicalPath(workspacePath);
+            var key = OperatingSystem.IsWindows() ? canonicalPath.ToUpperInvariant() : canonicalPath;
+            var digest = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(key)));
+            // Open an existing lock for reading only. Never create a directory, lock file, or lease.
+            using var stream = new FileStream(Path.Combine(root, $"{digest}.lock"), FileMode.Open,
+                FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            return new("available");
+        }
+        catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return new("available");
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return new("unknown", "The workspace lock is busy or could not be inspected.");
+        }
+    }
 
     public ValueTask<IAsyncDisposable> AcquireAsync(
         string workspacePath,
@@ -129,6 +155,8 @@ public sealed class FileWorkspaceExecutionLock(string? lockRoot = null) : IWorks
 internal sealed class NoOpWorkspaceExecutionLock : IWorkspaceExecutionLock
 {
     public static NoOpWorkspaceExecutionLock Instance { get; } = new();
+
+    public WorkspaceLockObservation Inspect(string workspacePath) => new("available");
 
     public ValueTask<IAsyncDisposable> AcquireAsync(
         string workspacePath,

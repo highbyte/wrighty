@@ -82,7 +82,8 @@ public sealed partial class OutputWriter(
         IEnumerable<WorkItemOperationalState> items,
         bool compact,
         bool json,
-        Func<WorkItemId, string> formatShort)
+        Func<WorkItemId, string> formatShort,
+        WorkItemListingContext? listing = null)
     {
         var materialized = items.ToArray();
         if (json)
@@ -90,6 +91,7 @@ public sealed partial class OutputWriter(
             await WriteJsonAsync(new
             {
                 schemaVersion = 1,
+                listing,
                 result = materialized
                     .Select(item => OperationalDto(item, formatShort))
                     .ToArray()

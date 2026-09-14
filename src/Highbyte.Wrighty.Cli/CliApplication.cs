@@ -211,6 +211,7 @@ public sealed partial class CliApplication(
         root.Subcommands.Add(BuildInitCommand());
         root.Subcommands.Add(BuildListCommand());
         root.Subcommands.Add(BuildStatusCommand());
+        root.Subcommands.Add(BuildWorkersCommand());
         root.Subcommands.Add(BuildGetCommand());
         root.Subcommands.Add(BuildActionsCommand());
         root.Subcommands.Add(BuildContextCommand());
@@ -2753,24 +2754,25 @@ public sealed partial class CliApplication(
                         2);
                 }
 
-                var items = await tracker.ListOperationalAsync(
-                    config,
-                    new ListWorkItemsRequest(
+                var scope = ArchiveScope.Active;
+                if (parseResult.GetValue(archived))
+                    scope = ArchiveScope.Archived;
+                else if (parseResult.GetValue(includeArchived))
+                    scope = ArchiveScope.All;
+                var request = new ListWorkItemsRequest(
                         parseResult.GetValue(status),
                         parseResult.GetValue(limit),
-                        parseResult.GetValue(archived)
-                            ? ArchiveScope.Archived
-                            : parseResult.GetValue(includeArchived)
-                                ? ArchiveScope.All
-                                : ArchiveScope.Active,
+                        scope,
                         ParseFields(parseResult.GetValue(fields), allowDeletion: false)
-                            .ToDictionary(pair => pair.Key, pair => pair.Value!, StringComparer.Ordinal)),
-                    cancellationToken);
+                            .ToDictionary(pair => pair.Key, pair => pair.Value!, StringComparer.Ordinal));
+                var items = await tracker.ListOperationalAsync(config, request, cancellationToken);
+                var listing = parseResult.GetValue(json)
+                    ? await DescribeListingAsync(config, request, items.Count, cancellationToken) : null;
                 await writer.WriteOperationalItemsAsync(
                     items,
                     parseResult.GetValue(compact),
                     parseResult.GetValue(json),
-                    id => tracker.FormatShort(config, id));
+                    id => tracker.FormatShort(config, id), listing);
             },
             cancellationToken));
         return command;

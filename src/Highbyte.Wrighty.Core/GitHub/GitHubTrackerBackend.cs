@@ -20,6 +20,9 @@ public sealed class GitHubTrackerBackend(
     private readonly Func<TimeSpan, CancellationToken, Task> retryDelay =
         delay ?? Task.Delay;
 
+    public Task<IReadOnlyList<string>> WorkflowStatusesAsync(TrackerConfig config, CancellationToken cancellationToken) =>
+        projects.WorkflowStatusesAsync(config, cancellationToken);
+
     public string Name => "github";
 
     public IWorkItemAddressResolver AddressResolver => resolver;

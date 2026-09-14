@@ -75,6 +75,11 @@ internal static class WorkerInstanceEventProjection
 /// </summary>
 public sealed class WorkerRunControl : IDisposable
 {
+    internal Func<WorkerRunProgress, Task>? ReportProgress { get; set; }
+
+    internal Task ReportProgressAsync(WorkerRunProgress progress) =>
+        ReportProgress?.Invoke(progress) ?? Task.CompletedTask;
+
     private static readonly ConcurrentDictionary<CancellationToken, WorkerRunControl> Controls = [];
     private readonly CancellationTokenSource intake = new();
     private readonly CancellationTokenSource interruption = new();
@@ -237,11 +242,23 @@ public sealed class WorkerRunHost(
             identity.ConfigurationRevision,
             identity.InvocationSummary,
             identity.HostKind,
+            WorkerScheduling.From(config, options, identity, selection),
             callbacks.Warn,
             hostCancellationToken);
         await using var registrationScope = registration;
         control.RunId = registration.RunId;
         var warningState = new RegistryWarningState();
+        control.ReportProgress = async progress =>
+        {
+            try
+            {
+                await registration.UpdateProgressAsync(progress, CancellationToken.None);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                await WarnOnceAsync(warningState, callbacks.Warn, "Local worker progress could not be updated.");
+            }
+        };
         void ControlStateChanged() => _ = ReflectControlStateAsync(
             registration,
             control,
@@ -306,6 +323,7 @@ public sealed class WorkerRunHost(
                 // Expected when the worker run ends before another control poll.
             }
             control.StateChanged -= ControlStateChanged;
+            control.ReportProgress = null;
         }
     }
 
@@ -314,6 +332,7 @@ public sealed class WorkerRunHost(
         string configurationRevision,
         string invocationSummary,
         WorkerHostKind hostKind,
+        WorkerScheduling scheduling,
         Func<string, Task>? warn,
         CancellationToken cancellationToken)
     {
@@ -323,7 +342,7 @@ public sealed class WorkerRunHost(
                 configurationPath,
                 configurationRevision,
                 invocationSummary,
-                new WorkerRegistrationMetadata(hostKind),
+                new WorkerRegistrationMetadata(hostKind, Scheduling: scheduling),
                 cancellationToken);
         }
         catch (Exception exception) when (

@@ -34,3 +34,5 @@ first-run guide. These pages are the authority for options, guarantees, and edge
 
 Related: [workflow guide](../workflows.md), [item metadata](../item-metadata/README.md), and
 [design documents](../design/).
+
+- [Worker discovery](workers.md): scoped run inspection and item pickup assessment.
