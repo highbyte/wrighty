@@ -20,7 +20,7 @@ public sealed record OperationalAction(
     bool Recommended = false)
 {
     // The foundation deliberately has no executors, including for otherwise available actions.
-    public string Execution => "manual-only";
+    public string Execution { get; } = "manual-only";
 
     public static OperationalAction FromGuidance(
         WorkerOperatorAction guidance,

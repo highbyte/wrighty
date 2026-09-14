@@ -31,19 +31,27 @@ public sealed partial class CliApplication
             var itemId = tracker.ResolveId(config, parsed.GetValue(id)!);
             var state = await tracker.GetOperationalAsync(config, itemId, cancellationToken);
             var discovery = await DiscoverActionsAsync(config, state, cancellationToken);
-            var selected = parsed.GetValue(name);
-            if (selected is not null && !discovery.Actions.Any(action => action.Name == selected))
-                throw new TrackerException("ACTION_UNKNOWN", $"Unknown action '{selected}'.", 2);
-            if (selected is not null && parsed.GetValue(all))
-                throw new TrackerException("ARGUMENT_INVALID", "--all cannot be combined with an action name.", 2);
-            var shown = discovery.Actions.Where(action => selected is not null
-                ? action.Name == selected
-                : parsed.GetValue(all) || action.Availability == "available").ToArray();
-            if (selected is not null && shown[0].UnavailableCode is { } code)
-                throw new TrackerException(code, shown[0].UnavailableReason!, 5);
-            await writer.WriteActionsAsync(discovery with { Actions = shown }, parsed.GetValue(json));
+            var shown = SelectActions(discovery, parsed.GetValue(name), parsed.GetValue(all));
+            await writer.WriteActionsAsync(shown, parsed.GetValue(json));
         }, cancellationToken));
         return command;
+    }
+
+    private static OperationalActionDiscovery SelectActions(
+        OperationalActionDiscovery discovery, string? selected, bool all)
+    {
+        if (selected is null)
+            return discovery with
+            {
+                Actions = discovery.Actions.Where(action => all || action.Availability == "available").ToArray()
+            };
+        var action = discovery.Actions.SingleOrDefault(value => value.Name == selected)
+            ?? throw new TrackerException("ACTION_UNKNOWN", $"Unknown action '{selected}'.", 2);
+        if (all)
+            throw new TrackerException("ARGUMENT_INVALID", "--all cannot be combined with an action name.", 2);
+        if (action.UnavailableCode is { } code)
+            throw new TrackerException(code, action.UnavailableReason!, 5);
+        return discovery with { Actions = [action] };
     }
 
     private async Task<OperationalActionDiscovery> DiscoverActionsAsync(

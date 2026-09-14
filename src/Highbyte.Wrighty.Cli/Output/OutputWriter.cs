@@ -862,8 +862,8 @@ public sealed partial class OutputWriter(
             await output.WriteLineAsync($"  {action.Name}: {action.Title}");
             if (action.Url is { } url)
                 await output.WriteLineAsync($"    Link: {url}");
-            else if (action.Commands.FirstOrDefault() is { } command)
-                await output.WriteLineAsync($"    {command}");
+            else if (action.Commands.Count > 0)
+                await output.WriteLineAsync($"    {action.Commands[0]}");
         }
         await output.WriteLineAsync($"  wrighty actions {discovery.ItemId} --all");
     }

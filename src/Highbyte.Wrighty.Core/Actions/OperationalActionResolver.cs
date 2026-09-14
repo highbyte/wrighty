@@ -20,6 +20,8 @@ public sealed record OperationalActionContext(
 /// </summary>
 public static class OperationalActionResolver
 {
+    private const string ConfirmationRequired = "required";
+
     public static OperationalActionDiscovery Resolve(OperationalActionContext context)
     {
         var (config, state) = (context.Config, context.State);
@@ -39,46 +41,24 @@ public static class OperationalActionResolver
             OperationalAction.FromGuidance(review, ActionAvailability.Available,
                 surface.HasDiscussion ? "url" : "local-process", startsProcess: !surface.HasDiscussion)
         ];
-        var editable = EditAvailability(state);
-        var clarify = OperationalAction.FromGuidance(
-            guidance.Single(value => value.Name == "clarify"), editable,
-            confirmation: state.Claim.State == ClaimOwnershipState.Unclaimed ? "none" : "required",
-            requiresTty: true);
-        actions.Add(clarify);
-        if (state.OperationalStatus == OperationalStatuses.NeedsAttention)
-        {
-            if (surface.HasDiscussion)
-            {
-                var answer = guidance.Single(value => value.Name == "answer-on-issue");
-                actions.Add(OperationalAction.FromGuidance(answer with { Commands = [] },
-                    state.Item.Archived ? Block("ITEM_ARCHIVED", "The item is archived.") : ActionAvailability.Available,
-                    "url", "required"));
-            }
-            else
-            {
-                actions.Add(OperationalAction.FromGuidance(
-                    guidance.Single(value => value.Name == "clarify-and-continue"),
-                    FirstBlocked(editable, WorkerAvailability(context)),
-                    "manual-steps", "required", startsProcess: true));
-            }
-        }
+        AddClarificationActions(context, surface, guidance, actions);
         AddBoardActions(context, actions);
         var workerAvailability = WorkerAvailability(context);
         if (state.OperationalStatus != OperationalStatuses.RetryScheduled)
             actions.Add(OperationalAction.FromGuidance(
                 state.OperationalStatus == OperationalStatuses.HandoffQueued
                     ? OperationalActionGuidance.HandoffNow(id) : OperationalActionGuidance.ContinueWorker(id),
-                workerAvailability, confirmation: "required", startsProcess: true));
+                workerAvailability, confirmation: ConfirmationRequired, startsProcess: true));
         actions.Add(OperationalAction.FromGuidance(
             new WorkerOperatorAction("Open recorded session", [$"wrighty resume-command {id.Value} --exec"],
                 "Open the recorded vendor session interactively on this installation.", Name: "resume-session"),
             FirstBlocked(SessionAvailability(context), context.InteractiveAdmission ?? ActionAvailability.Unverified),
-            "local-process", "required", requiresTty: true, startsProcess: true));
+            "local-process", ConfirmationRequired, requiresTty: true, startsProcess: true));
         actions.Add(OperationalAction.FromGuidance(
             OperationalActionGuidance.RetryNow(id),
             state.OperationalStatus == OperationalStatuses.RetryScheduled
                 ? workerAvailability : Block("RETRY_NOT_SCHEDULED", "No retry is scheduled for this item."),
-            confirmation: "required", startsProcess: true));
+            confirmation: ConfirmationRequired, startsProcess: true));
         actions.Add(OperationalAction.FromGuidance(OperationalActionGuidance.InspectRecovery(id),
             ActionAvailability.Available));
         // Only a clarification pause determines a next action without choosing an operator policy.
@@ -90,6 +70,36 @@ public static class OperationalActionResolver
         return new(id.Value, context.ObservedAt, recommended,
             actions.Select(value => value with { Recommended = value.Name == recommended })
                 .OrderByDescending(value => value.Recommended).ToArray());
+    }
+
+    private static void AddClarificationActions(
+        OperationalActionContext context, OperatorSurface surface,
+        IReadOnlyList<WorkerOperatorAction> guidance, List<OperationalAction> actions)
+    {
+        var state = context.State;
+        var editable = EditAvailability(state);
+        var clarify = OperationalAction.FromGuidance(
+            guidance.Single(value => value.Name == "clarify"), editable,
+            confirmation: state.Claim.State == ClaimOwnershipState.Unclaimed ? "none" : ConfirmationRequired,
+            requiresTty: true);
+        actions.Add(clarify);
+        if (state.OperationalStatus == OperationalStatuses.NeedsAttention)
+        {
+            if (surface.HasDiscussion)
+            {
+                var answer = guidance.Single(value => value.Name == "answer-on-issue");
+                actions.Add(OperationalAction.FromGuidance(answer with { Commands = [] },
+                    state.Item.Archived ? Block("ITEM_ARCHIVED", "The item is archived.") : ActionAvailability.Available,
+                    "url", ConfirmationRequired));
+            }
+            else
+            {
+                actions.Add(OperationalAction.FromGuidance(
+                    guidance.Single(value => value.Name == "clarify-and-continue"),
+                    FirstBlocked(editable, WorkerAvailability(context)),
+                    "manual-steps", ConfirmationRequired, startsProcess: true));
+            }
+        }
     }
 
     private static void AddBoardActions(OperationalActionContext context, List<OperationalAction> actions)
@@ -146,22 +156,27 @@ public static class OperationalActionResolver
             : ActionAvailability.Available;
     }
 
-    private static string QueueConsequence(TrackerConfig config, bool queue) =>
-        config.EffectiveWorker.UseWorkerQueue
-            ? queue ? "This authorizes automatic processing; it does not start a worker."
-                : "This revokes worker-queue authorization."
-            : "Worker-queue authorization is disabled; execution policy remains independent.";
+    private static string QueueConsequence(TrackerConfig config, bool queue)
+    {
+        if (!config.EffectiveWorker.UseWorkerQueue)
+            return "Worker-queue authorization is disabled; execution policy remains independent.";
+        return queue ? "This authorizes automatic processing; it does not start a worker."
+            : "This revokes worker-queue authorization.";
+    }
 
     private static OperationalAction BoardAction(string name, string title, string description,
         ActionAvailability availability) => OperationalAction.FromGuidance(
             new WorkerOperatorAction(title, [], description + " Use the corresponding Board action in wrighty web.",
-                Name: name), availability, confirmation: "required");
+                Name: name), availability, confirmation: ConfirmationRequired);
 
-    private static ActionAvailability EditAvailability(WorkItemOperationalState state) =>
-        state.Item.Archived ? Block("ITEM_ARCHIVED", "The item is archived.")
-        : state.Claim.State != ClaimOwnershipState.Unclaimed && !state.Claim.TakeoverAvailable
+    private static ActionAvailability EditAvailability(WorkItemOperationalState state)
+    {
+        if (state.Item.Archived)
+            return Block("ITEM_ARCHIVED", "The item is archived.");
+        return state.Claim.State != ClaimOwnershipState.Unclaimed && !state.Claim.TakeoverAvailable
             ? Block("CLAIM_HELD", "The current claim cannot be taken over here.")
             : ActionAvailability.Available;
+    }
 
     public static ActionAvailability SessionAvailability(OperationalActionContext context)
     {
