@@ -14,7 +14,7 @@ using Highbyte.Wrighty;
 
 namespace Highbyte.Wrighty.UnitTests.Workers;
 
-public sealed class LocalDispatchStateTests : IDisposable
+public sealed partial class LocalDispatchStateTests : IDisposable
 {
     private readonly string directory = Path.Combine(Path.GetTempPath(), $"wrighty-worker-{Guid.NewGuid():N}");
     private readonly FakeClock clock = new(DateTimeOffset.Parse("2026-07-17T10:00:00Z"));

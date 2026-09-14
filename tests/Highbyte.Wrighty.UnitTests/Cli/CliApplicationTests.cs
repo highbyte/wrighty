@@ -4556,7 +4556,8 @@ public sealed partial class CliApplicationTests : IDisposable
 
     private sealed class RecordingBackend(
         bool automaticExecutionAllowed = false,
-        bool? contextApprovalFieldApproved = null)
+        bool? contextApprovalFieldApproved = null,
+        bool failReads = false)
         : IWorkItemBackend, IExistingWorkItemAdoptionBackend
     {
         public CreateWorkItemRequest? Request { get; private set; }
@@ -4589,7 +4590,11 @@ public sealed partial class CliApplicationTests : IDisposable
         public Task<WorkItemDetail?> GetAsync(
             TrackerConfig config,
             WorkItemId id,
-            CancellationToken cancellationToken) => Task.FromResult<WorkItemDetail?>(new WorkItemDetail(
+            CancellationToken cancellationToken)
+        {
+            if (failReads)
+                throw new InvalidOperationException("Tracker must not be read.");
+            return Task.FromResult<WorkItemDetail?>(new WorkItemDetail(
                 id,
                 "Example",
                 "Body",
@@ -4599,6 +4604,7 @@ public sealed partial class CliApplicationTests : IDisposable
                 AutomaticExecutionAllowed: automaticExecutionAllowed,
                 AgentPolicy: automaticExecutionAllowed ? "claude" : null,
                 ContextApprovalFieldApproved: contextApprovalFieldApproved));
+        }
 
         public Task<CreateWorkItemResult> CreateAsync(
             TrackerConfig config,

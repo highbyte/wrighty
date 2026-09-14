@@ -6,6 +6,9 @@ namespace Highbyte.Wrighty.Projects;
 
 public interface IProjectClient
 {
+    Task<IReadOnlyList<string>> WorkflowStatusesAsync(TrackerConfig config, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<string>>([]);
+
     /// <param name="projectCreated">
     /// Whether this run created the Project, rather than adopting one that already existed.
     /// Wrighty owns the schema of a Project it created and provisions the priority scale there;

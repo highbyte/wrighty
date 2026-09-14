@@ -10,7 +10,7 @@ using static Highbyte.Wrighty.Text.Grammar;
 
 namespace Highbyte.Wrighty.Workers;
 
-public sealed class WorkerService(
+public sealed partial class WorkerService(
     TrackerService tracker,
     IAgentProcessRunner processes,
     IWorkspaceManager workspaces,
@@ -413,6 +413,7 @@ public sealed class WorkerService(
         }
 
         var state = new WorkerLoopState(now());
+        await control.ReportProgressAsync(new(state.Processed, state.IdleStarted));
         while (!control.IntakeClosed &&
                (!options.MaxItems.HasValue || state.Processed < options.MaxItems.Value))
         {
@@ -463,6 +464,7 @@ public sealed class WorkerService(
         if (queued is not null)
         {
             state.Record(queued, now());
+            await control.ReportProgressAsync(new(state.Processed, state.IdleStarted));
             return options.Once;
         }
 
@@ -474,6 +476,7 @@ public sealed class WorkerService(
             var disposition = await RunFreshCandidateAsync(
                 config, options, repositoryPath, diagnostics, emit, cancellationToken);
             state.Record(disposition, now());
+            await control.ReportProgressAsync(new(state.Processed, state.IdleStarted));
             return options.Once;
         }
         catch (TrackerException exception) when (exception.Code == "NO_ITEM_AVAILABLE")

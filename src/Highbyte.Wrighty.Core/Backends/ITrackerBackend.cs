@@ -21,6 +21,9 @@ public interface IWorkItemContentReader
 
 public interface ITrackerBackend : IWorkItemContentReader
 {
+    Task<IReadOnlyList<string>> WorkflowStatusesAsync(TrackerConfig config, CancellationToken cancellationToken) =>
+        Task.FromResult<IReadOnlyList<string>>(config.LocalMarkdown?.Statuses ?? []);
+
     string Name { get; }
 
     IWorkItemAddressResolver AddressResolver { get; }

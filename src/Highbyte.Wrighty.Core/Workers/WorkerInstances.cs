@@ -53,7 +53,9 @@ public sealed record WorkerInstance(
     string? CurrentAgent = null,
     int? ControlProtocolVersion = null,
     IReadOnlyList<WorkerStopMode>? SupportedStopModes = null,
-    string? CurrentItemTitle = null);
+    string? CurrentItemTitle = null,
+    WorkerScheduling? Scheduling = null,
+    WorkerRunProgress? Progress = null);
 
 public sealed record WorkerInstanceStatus(
     WorkerInstance Instance,
@@ -65,7 +67,8 @@ public sealed record WorkerProcessObservation(bool Exists, string? StartIdentity
 public sealed record WorkerRegistrationMetadata(
     WorkerHostKind HostKind,
     int ControlProtocolVersion = 1,
-    IReadOnlyList<WorkerStopMode>? SupportedStopModes = null)
+    IReadOnlyList<WorkerStopMode>? SupportedStopModes = null,
+    WorkerScheduling? Scheduling = null)
 {
     public IReadOnlyList<WorkerStopMode> EffectiveSupportedStopModes =>
         SupportedStopModes ?? [WorkerStopMode.Drain, WorkerStopMode.Interrupt];
@@ -103,6 +106,9 @@ public interface IWorkerInstanceRegistration : IAsyncDisposable
         CancellationToken cancellationToken) =>
         UpdateAsync(currentItemId, currentAgent, state, cancellationToken);
 
+    Task UpdateProgressAsync(WorkerRunProgress progress, CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+
     Task<WorkerStopMode?> ReadStopRequestAsync(CancellationToken cancellationToken) =>
         Task.FromResult<WorkerStopMode?>(null);
 
@@ -114,14 +120,13 @@ public interface IWorkerInstanceRegistration : IAsyncDisposable
 
 public interface IWorkerInstanceRegistry
 {
+    Task<WorkerRegistrySnapshot> InspectAsync(string configurationPath, CancellationToken cancellationToken) =>
+        Task.FromResult(WorkerRegistrySnapshot.Unavailable(configurationPath));
+
     Task<IWorkerInstanceRegistration> RegisterAsync(
         string configurationPath,
         string configurationRevision,
         string invocationSummary,
-        CancellationToken cancellationToken);
-
-    Task<IReadOnlyList<WorkerInstanceStatus>> ListAsync(
-        string configurationPath,
         CancellationToken cancellationToken);
 
     Task<IWorkerInstanceRegistration> RegisterAsync(
@@ -135,6 +140,10 @@ public interface IWorkerInstanceRegistry
             configurationRevision,
             invocationSummary,
             cancellationToken);
+
+    Task<IReadOnlyList<WorkerInstanceStatus>> ListAsync(
+        string configurationPath,
+        CancellationToken cancellationToken);
 
     Task<WorkerStopRequestResult> RequestStopAsync(
         string configurationPath,
@@ -230,7 +239,9 @@ public sealed class JsonWorkerInstanceRegistry(
             metadata.HostKind,
             CurrentAgent: null,
             metadata.ControlProtocolVersion,
-            metadata.EffectiveSupportedStopModes);
+            metadata.EffectiveSupportedStopModes,
+            Scheduling: metadata.Scheduling,
+            Progress: metadata.Scheduling is null ? null : new(0, timestamp));
         var registration = new Registration(
             RecordPath(pathHash, runId),
             StopRequestPath(pathHash, runId),
@@ -241,9 +252,27 @@ public sealed class JsonWorkerInstanceRegistry(
         return registration;
     }
 
-    public async Task<IReadOnlyList<WorkerInstanceStatus>> ListAsync(
-        string configurationPath,
-        CancellationToken cancellationToken)
+    public Task<IReadOnlyList<WorkerInstanceStatus>> ListAsync(
+        string configurationPath, CancellationToken cancellationToken) =>
+        ListCoreAsync(configurationPath, cleanup: true, cancellationToken);
+
+    public async Task<WorkerRegistrySnapshot> InspectAsync(
+        string configurationPath, CancellationToken cancellationToken)
+    {
+        var observedAt = now();
+        var workers = await ListCoreAsync(configurationPath, cleanup: false, cancellationToken);
+        var unreadable = workers.Any(value => value.Instance.ProcessId == 0);
+        var unavailable = workers.Any(value => value.Instance.RunId == "registry-unavailable" && value.Instance.ProcessId == 0);
+        var coverage = unavailable ? "unavailable" : "complete";
+        if (unreadable && !unavailable)
+            coverage = "incomplete";
+        return new(observedAt, ConfigurationPathHash(configurationPath),
+            coverage, workers,
+            unreadable ? "Some registry records could not be read; coverage is incomplete." : null);
+    }
+
+    private async Task<IReadOnlyList<WorkerInstanceStatus>> ListCoreAsync(
+        string configurationPath, bool cleanup, CancellationToken cancellationToken)
     {
         var directory = Path.Combine(
             paths.WorkerInstancesRoot,
@@ -251,12 +280,16 @@ public sealed class JsonWorkerInstanceRegistry(
         string[] records;
         try
         {
-            if (!Directory.Exists(directory))
-                return [];
             records = Directory.GetFiles(directory, "*.json")
                 .Where(path => !path.EndsWith(".stop.json", StringComparison.Ordinal))
                 .ToArray();
-            CleanupExpiredStopRequests(directory);
+            if (cleanup)
+                CleanupExpiredStopRequests(directory);
+        }
+        catch (DirectoryNotFoundException)
+        {
+            return MissingDirectoryIsReadable(directory, paths.WorkerInstancesRoot, paths.Root)
+                ? [] : [UnreadableStatus(configurationPath, "Worker registry directory could not be read.")];
         }
         catch (Exception exception) when (
             exception is IOException or UnauthorizedAccessException)
@@ -270,43 +303,10 @@ public sealed class JsonWorkerInstanceRegistry(
         foreach (var path in records)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            WorkerInstance? instance;
-            try
-            {
-                await using var stream = File.OpenRead(path);
-                instance = await JsonSerializer.DeserializeAsync<WorkerInstance>(
-                    stream,
-                    JsonOptions,
-                    cancellationToken);
-            }
-            catch (Exception exception) when (
-                exception is IOException or JsonException or UnauthorizedAccessException)
-            {
-                statuses.Add(UnreadableStatus(
-                    configurationPath,
-                    "Worker record could not be read.",
-                    Path.GetFileNameWithoutExtension(path)));
-                continue;
-            }
-            if (instance is null)
-                continue;
-
-            statuses.Add(Status(instance));
-            if (now() - instance.LastHeartbeatAt > TimeSpan.FromHours(24))
-            {
-                try
-                {
-                    File.Delete(path);
-                    File.Delete(StopRequestPath(
-                        instance.ConfigurationPathHash,
-                        instance.RunId));
-                }
-                catch (Exception exception) when (
-                    exception is IOException or UnauthorizedAccessException)
-                {
-                    // Expired records are best-effort cleanup; listing remains authoritative.
-                }
-            }
+            var status = await ReadStatusAsync(path, configurationPath, cancellationToken);
+            statuses.Add(status);
+            if (cleanup)
+                CleanupExpiredRecord(path, status.Instance);
         }
 
         return statuses
@@ -314,6 +314,62 @@ public sealed class JsonWorkerInstanceRegistry(
             .ThenByDescending(value => value.Instance.StartedAt)
             .ThenBy(value => value.Instance.RunId, StringComparer.Ordinal)
             .ToArray();
+    }
+
+    private static bool MissingDirectoryIsReadable(params string[] paths)
+    {
+        foreach (var path in paths)
+        {
+            try
+            {
+                if (!File.GetAttributes(path).HasFlag(FileAttributes.Directory))
+                    return false;
+            }
+            catch (Exception exception) when (exception is FileNotFoundException or DirectoryNotFoundException)
+            {
+                // A genuinely absent directory is an observable empty scope.
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private async Task<WorkerInstanceStatus> ReadStatusAsync(
+        string path, string configurationPath, CancellationToken cancellationToken)
+    {
+        WorkerInstance? instance;
+        try
+        {
+            await using var stream = File.OpenRead(path);
+            instance = await JsonSerializer.DeserializeAsync<WorkerInstance>(stream, JsonOptions, cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or JsonException or UnauthorizedAccessException)
+        {
+            return UnreadableStatus(configurationPath, "Worker record could not be read.", Path.GetFileNameWithoutExtension(path));
+        }
+        if (instance is null || instance.ProcessId <= 0 ||
+            instance.RunId != Path.GetFileNameWithoutExtension(path) ||
+            instance.ConfigurationPathHash != ConfigurationPathHash(configurationPath))
+            return UnreadableStatus(configurationPath, "Worker record identity is invalid.", Path.GetFileNameWithoutExtension(path));
+        return Status(instance);
+    }
+
+    private void CleanupExpiredRecord(string path, WorkerInstance instance)
+    {
+        if (instance.ProcessId <= 0 || now() - instance.LastHeartbeatAt <= TimeSpan.FromHours(24))
+            return;
+        try
+        {
+            File.Delete(path);
+            File.Delete(StopRequestPath(instance.ConfigurationPathHash, instance.RunId));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Cleanup belongs to the legacy listing path; read-only inspection never calls this.
+        }
     }
 
     public async Task<WorkerStopRequestResult> RequestStopAsync(
@@ -452,7 +508,16 @@ public sealed class JsonWorkerInstanceRegistry(
 
     private WorkerInstanceStatus Status(WorkerInstance instance)
     {
-        var observation = observe(instance.ProcessId);
+        WorkerProcessObservation observation;
+        try
+        {
+            observation = observe(instance.ProcessId);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException
+            or System.ComponentModel.Win32Exception or System.Security.SecurityException)
+        {
+            observation = new(true, null);
+        }
         if (!observation.Exists)
         {
             return new WorkerInstanceStatus(
@@ -460,19 +525,19 @@ public sealed class JsonWorkerInstanceRegistry(
                 WorkerInstanceLiveness.Stale,
                 "The recorded process no longer exists.");
         }
-        if (now() - instance.LastHeartbeatAt > staleAfter)
-        {
-            return new WorkerInstanceStatus(
-                instance,
-                WorkerInstanceLiveness.Stale,
-                $"No heartbeat since {instance.LastHeartbeatAt:O}.");
-        }
         if (observation.StartIdentity is null || instance.ProcessStartIdentity is null)
         {
             return new WorkerInstanceStatus(
                 instance,
                 WorkerInstanceLiveness.Unknown,
                 "The operating system could not verify process-start identity.");
+        }
+        if (now() - instance.LastHeartbeatAt > staleAfter)
+        {
+            return new WorkerInstanceStatus(
+                instance,
+                WorkerInstanceLiveness.Stale,
+                $"No heartbeat since {instance.LastHeartbeatAt:O}.");
         }
         if (!string.Equals(
                 observation.StartIdentity,
@@ -566,7 +631,8 @@ public sealed class JsonWorkerInstanceRegistry(
             return new WorkerProcessObservation(false, null);
         }
         catch (Exception exception) when (
-            exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+            exception is InvalidOperationException or System.ComponentModel.Win32Exception
+                or UnauthorizedAccessException or System.Security.SecurityException)
         {
             return new WorkerProcessObservation(true, null);
         }
@@ -576,7 +642,8 @@ public sealed class JsonWorkerInstanceRegistry(
     {
         try { return process.StartTime.ToUniversalTime().Ticks.ToString(); }
         catch (Exception exception) when (
-            exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+            exception is InvalidOperationException or System.ComponentModel.Win32Exception
+                or UnauthorizedAccessException or System.Security.SecurityException)
         {
             return null;
         }
@@ -642,12 +709,29 @@ public sealed class JsonWorkerInstanceRegistry(
                 }
                 current = current with
                 {
+                    Progress = currentItemId is null && current.CurrentItemId is not null ? null : current.Progress,
                     CurrentItemId = currentItemId,
                     CurrentItemTitle = nextItemTitle,
                     CurrentAgent = currentAgent,
                     State = state,
                     LastHeartbeatAt = clock()
                 };
+                await WriteWithoutGateAsync(cancellationToken);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
+        public async Task UpdateProgressAsync(WorkerRunProgress progress, CancellationToken cancellationToken)
+        {
+            await gate.WaitAsync(cancellationToken);
+            try
+            {
+                if (disposed)
+                    return;
+                current = current with { Progress = progress, LastHeartbeatAt = clock() };
                 await WriteWithoutGateAsync(cancellationToken);
             }
             finally

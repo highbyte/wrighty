@@ -1436,3 +1436,6 @@ target agent is told why it has no history instead of silently assuming there wa
 
 These CLI surfaces are version-sensitive. Validate vendor upgrades in a throwaway repository before
 unattended use.
+
+Use [`wrighty workers`](workers.md) for focused local run discovery or `workers --item <id> --json`
+for advisory pickup prospects. Inspection alone does not start a worker.

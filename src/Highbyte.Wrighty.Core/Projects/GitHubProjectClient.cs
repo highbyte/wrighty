@@ -388,6 +388,10 @@ public sealed class GitHubProjectClient : IProjectClient
         new("P3", "Low priority", "GRAY")
     ];
 
+    public async Task<IReadOnlyList<string>> WorkflowStatusesAsync(
+        TrackerConfig config, CancellationToken cancellationToken) =>
+        (await GetMetadataAsync(config, cancellationToken)).StatusOptions.Keys.ToArray();
+
     public async Task<ProjectInitializationResult> InitializeAsync(
         TrackerConfig config,
         bool checkOnly,
