@@ -366,11 +366,17 @@ public static class HandoverRenderer
                 builder.AppendLine($"  {line}");
         }
 
-        if (action.Commands.Count > 0)
+        if (action.Url is { } url)
+        {
+            builder.AppendLine();
+            builder.AppendLine($"  Link: {url}");
+        }
+        var commands = action.Commands.Where(command => command != action.Url).ToArray();
+        if (commands.Length > 0)
         {
             builder.AppendLine();
             builder.AppendLine("  ```");
-            foreach (var command in action.Commands)
+            foreach (var command in commands)
                 builder.AppendLine($"  {command}");
             builder.AppendLine("  ```");
         }

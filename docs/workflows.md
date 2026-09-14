@@ -50,6 +50,9 @@ claim state, remaining lease, and any resumable session. A worker-originated act
 as `<Agent> processing`; this describes Wrighty's coordination state and is not a guarantee that the
 vendor process is making progress. Add `--json` for scripts.
 
+Use `wrighty actions ID` to discover current next actions, or add `--all --json` to inspect blocked
+alternatives. See [Action discovery](reference/actions.md); discovery never starts the operation.
+
 ### Web console
 
 For Local Markdown, start the web console and select a card:

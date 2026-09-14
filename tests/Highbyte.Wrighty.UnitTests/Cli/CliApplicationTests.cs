@@ -25,7 +25,7 @@ using System.Text.Json;
 
 namespace Highbyte.Wrighty.UnitTests.Cli;
 
-public sealed class CliApplicationTests : IDisposable
+public sealed partial class CliApplicationTests : IDisposable
 {
     /// <summary>
     /// Temporary settings roots created by <see cref="TempSettingsStore"/>, removed when xUnit

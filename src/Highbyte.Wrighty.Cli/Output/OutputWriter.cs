@@ -1,3 +1,4 @@
+using Highbyte.Wrighty.Actions;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Highbyte.Wrighty.AgentContext;
@@ -20,9 +21,10 @@ public sealed record StatusOutputContext(
     IReadOnlyList<ProviderCapacity>? ProviderCapacities = null,
     IReadOnlyList<WorkerInstanceStatus>? WorkerInstances = null,
     string? ConfigurationRevision = null,
-    IReadOnlyList<PendingWorkerInterruption>? PendingInterruptions = null);
+    IReadOnlyList<PendingWorkerInterruption>? PendingInterruptions = null,
+    IReadOnlyDictionary<string, OperationalActionDiscovery>? Actions = null);
 
-public sealed class OutputWriter(
+public sealed partial class OutputWriter(
     TextWriter output,
     TextWriter error,
     Func<DateTimeOffset>? clock = null)
@@ -174,19 +176,19 @@ public sealed class OutputWriter(
                 result = new
                 {
                     needsAttention = needsAttention
-                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort, context?.Actions?.GetValueOrDefault(value.Item.Id.Value))).ToArray(),
                     completed = completed
-                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort, context?.Actions?.GetValueOrDefault(value.Item.Id.Value))).ToArray(),
                     paused = paused
-                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort, context?.Actions?.GetValueOrDefault(value.Item.Id.Value))).ToArray(),
                     active = active
-                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort, context?.Actions?.GetValueOrDefault(value.Item.Id.Value))).ToArray(),
                     queued = queued
-                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort, context?.Actions?.GetValueOrDefault(value.Item.Id.Value))).ToArray(),
                     retries = retries
-                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort, context?.Actions?.GetValueOrDefault(value.Item.Id.Value))).ToArray(),
                     handoffs = handoffs
-                        .Select(value => StatusDto(value, workspaceStatuses, formatShort)).ToArray(),
+                        .Select(value => StatusDto(value, workspaceStatuses, formatShort, context?.Actions?.GetValueOrDefault(value.Item.Id.Value))).ToArray(),
                     providerCapacity,
                     localWorkers,
                     pendingInterruptions,
@@ -219,10 +221,7 @@ public sealed class OutputWriter(
             async value =>
             {
                 await WriteLastRunExcerptAsync(value);
-                await output.WriteLineAsync(
-                    $"      wrighty edit {value.Item.Id.Value} --takeover --yes --body-file requirements.md --requeue");
-                await output.WriteLineAsync(
-                    $"      wrighty worker --item {value.Item.Id.Value} --yes");
+                await WriteActionSummaryAsync(value, context);
             });
         await WriteStatusGroupAsync("Completed — retained worktree", completed, formatShort,
             value => WriteWorktreeAndCompletionAsync(value, workspaceStatuses, integration));
@@ -230,10 +229,7 @@ public sealed class OutputWriter(
             async value =>
             {
                 await WriteLastRunExcerptAsync(value);
-                await output.WriteLineAsync(
-                    $"      wrighty resume-command {value.Item.Id.Value}");
-                await output.WriteLineAsync(
-                    $"      wrighty worker --item {value.Item.Id.Value} --yes");
+                await WriteActionSummaryAsync(value, context);
             });
         await WriteStatusGroupAsync("Active", active, formatShort,
             value =>
@@ -413,7 +409,8 @@ public sealed class OutputWriter(
     private object StatusDto(
         WorkItemOperationalState value,
         IReadOnlyDictionary<string, WorkspaceStatusResult> workspaceStatuses,
-        Func<WorkItemId, string> formatShort)
+        Func<WorkItemId, string> formatShort,
+        OperationalActionDiscovery? actionDiscovery = null)
     {
         var status = workspaceStatuses.GetValueOrDefault(value.Item.Id.Value);
         return new
@@ -423,6 +420,7 @@ public sealed class OutputWriter(
             value.Item.Title,
             value.Item.Status,
             operationalStatus = value.OperationalStatus,
+            actions = actionDiscovery,
             branch = value.Session?.Branch,
             hasRecordedWorktree = value.Session?.HasRecordedWorktree ?? false,
             lastRun = value.Session?.Outcome is not { } outcome
@@ -464,7 +462,8 @@ public sealed class OutputWriter(
         bool json,
         Func<WorkItemId, string> formatShort,
         WorkspaceStatusResult? workspaceStatus = null,
-        bool interruptionBookkeepingIncomplete = false)
+        bool interruptionBookkeepingIncomplete = false,
+        OperationalActionDiscovery? actionDiscovery = null)
     {
         if (json)
         {
@@ -476,7 +475,8 @@ public sealed class OutputWriter(
                     formatShort,
                     includeBody: true,
                     workspaceStatus,
-                    interruptionBookkeepingIncomplete)
+                    interruptionBookkeepingIncomplete,
+                    actionDiscovery)
             });
             return;
         }
@@ -497,7 +497,7 @@ public sealed class OutputWriter(
         foreach (var field in item.EffectiveFields.OrderBy(pair => pair.Key, StringComparer.Ordinal))
             await output.WriteLineAsync($"{field.Key}: {field.Value}");
 
-        await WriteOperationalActionsAsync(value);
+        await WriteOperationalActionsAsync(actionDiscovery);
         await output.WriteLineAsync();
         await output.WriteLineAsync("Body");
         await output.WriteAsync(item.Body);
@@ -851,15 +851,29 @@ public sealed class OutputWriter(
         }
     }
 
-    private async Task WriteOperationalActionsAsync(WorkItemOperationalState value)
+    private async Task WriteOperationalActionsAsync(OperationalActionDiscovery? discovery)
     {
-        var actions = OperationalActions(value);
-        if (actions.Count == 0)
+        if (discovery is null)
             return;
         await output.WriteLineAsync();
         await output.WriteLineAsync("Next actions");
-        foreach (var action in actions)
-            await output.WriteLineAsync($"  {action}");
+        foreach (var action in discovery.Actions.Where(action => action.Availability == "available"))
+        {
+            await output.WriteLineAsync($"  {action.Name}: {action.Title}");
+            if (action.Url is { } url)
+                await output.WriteLineAsync($"    Link: {url}");
+            else if (action.Commands.FirstOrDefault() is { } command)
+                await output.WriteLineAsync($"    {command}");
+        }
+        await output.WriteLineAsync($"  wrighty actions {discovery.ItemId} --all");
+    }
+
+    private async Task WriteActionSummaryAsync(WorkItemOperationalState value, StatusOutputContext? context)
+    {
+        var discovery = context?.Actions?.GetValueOrDefault(value.Item.Id.Value);
+        if (discovery?.RecommendedAction is { } recommended)
+            await output.WriteLineAsync($"      Recommended: {recommended}");
+        await output.WriteLineAsync($"      wrighty actions {value.Item.Id.Value}");
     }
 
     public async Task WriteInitializationAsync(
@@ -1834,34 +1848,13 @@ public sealed class OutputWriter(
                 ? value[..width]
                 : $"{value[..(width - 1)]}…";
 
-    private static IReadOnlyList<string> OperationalActions(
-        WorkItemOperationalState value)
-    {
-        if (value.OperationalStatus is not (
-                OperationalStatuses.NeedsAttention or
-                OperationalStatuses.Queued or
-                OperationalStatuses.RetryScheduled or
-                OperationalStatuses.HandoffQueued or
-                OperationalStatuses.PausedSession))
-            return [];
-        // The web console's board is Local Markdown only; GitHub items carry a URL, so point there instead.
-        var reviewAction = value.Item.Url is { } issueUrl
-            ? $"Review on GitHub: {issueUrl}"
-            : "Open web UI: wrighty web";
-        return
-        [
-            reviewAction,
-            $"Edit requirements: wrighty edit {value.Item.Id.Value} --takeover",
-            $"Resume headlessly: wrighty worker --item {value.Item.Id.Value} --yes"
-        ];
-    }
-
     private object OperationalDto(
         WorkItemOperationalState value,
         Func<WorkItemId, string> formatShort,
         bool includeBody = false,
         WorkspaceStatusResult? workspaceStatus = null,
-        bool interruptionBookkeepingIncomplete = false)
+        bool interruptionBookkeepingIncomplete = false,
+        OperationalActionDiscovery? actionDiscovery = null)
     {
         // A single nullable view collapses the repeated "unclaimed ? null : …" projections into
         // null-conditional access below (which does not add to cognitive complexity).
@@ -1869,6 +1862,7 @@ public sealed class OutputWriter(
         return new
         {
             id = value.Item.Id.Value,
+            actions = actionDiscovery,
             displayId = formatShort(value.Item.Id),
             value.Item.Title,
             body = includeBody ? value.Item.Body : null,

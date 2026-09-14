@@ -1,3 +1,4 @@
+using Highbyte.Wrighty.Actions;
 using System.Text.Json;
 using Highbyte.Wrighty.Cli;
 using Highbyte.Wrighty.Cli.Output;
@@ -127,7 +128,7 @@ public sealed class OutputWriterTests
         var human = output.ToString();
         Assert.Contains("Needs attention (1)", human);
         Assert.Contains("last run: succeeded — Need the API key.", human);
-        Assert.Contains("wrighty edit local:1 --takeover", human);
+        Assert.Contains("wrighty actions local:1", human);
         Assert.Contains("Completed — retained worktree (1)", human);
         Assert.Contains("branch feature/b (dirty, unmerged)", human);
         Assert.Contains("Queued (1)", human);
@@ -920,7 +921,8 @@ public sealed class OutputWriterTests
                 new WorkItemOperationalState(
                     item, claim, session, OperationalStatuses.NeedsAttention),
                 json: false,
-                _ => "#42");
+                _ => "#42",
+                actionDiscovery: DiscoverForOutput(new(item, claim, session, OperationalStatuses.NeedsAttention)));
 
         var text = output.ToString();
         Assert.Contains("#42 Needs clarification", text);
@@ -1166,24 +1168,28 @@ public sealed class OutputWriterTests
         var now = DateTimeOffset.Parse("2026-07-22T12:00:00Z");
         var session = new AgentSessionRecord("codex", "s1", "/tmp/ws", now.AddMinutes(30), true);
 
-        // A GitHub item (carries a URL) must point at the issue, never the Local-Markdown-only web UI.
+        var githubState = State(OperationalStatuses.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
+            now.AddMinutes(30), "agent:worker:1", session, url: "https://github.com/o/r/issues/1");
         var githubOut = new StringWriter();
         await new OutputWriter(githubOut, new StringWriter(), () => now).WriteOperationalDetailAsync(
-            State(OperationalStatuses.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
-                now.AddMinutes(30), "agent:worker:1", session, url: "https://github.com/o/r/issues/1"),
-            json: false, _ => "#1");
-        var githubText = githubOut.ToString();
-        Assert.Contains("Review on GitHub: https://github.com/o/r/issues/1", githubText);
-        Assert.DoesNotContain("wrighty web", githubText);
+            githubState, json: false, _ => "#1", actionDiscovery: DiscoverForOutput(githubState));
+        Assert.Contains("Link: https://github.com/o/r/issues/1", githubOut.ToString());
+        Assert.DoesNotContain("wrighty web", githubOut.ToString());
 
-        // A Local Markdown item (no URL) keeps the web-UI action.
+        var localState = State(OperationalStatuses.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
+            now.AddMinutes(30), "agent:worker:1", session);
         var localOut = new StringWriter();
         await new OutputWriter(localOut, new StringWriter(), () => now).WriteOperationalDetailAsync(
-            State(OperationalStatuses.NeedsAttention, ClaimOwnershipState.OwnedByCurrent,
-                now.AddMinutes(30), "agent:worker:1", session),
-            json: false, _ => "#1");
-        Assert.Contains("Open web UI: wrighty web", localOut.ToString());
+            localState, json: false, _ => "#1", actionDiscovery: DiscoverForOutput(localState));
+        Assert.Contains("open-item: Open item in the web console", localOut.ToString());
+        Assert.Contains("wrighty web", localOut.ToString());
     }
+
+    private static OperationalActionDiscovery DiscoverForOutput(WorkItemOperationalState state) =>
+        OperationalActionResolver.Resolve(new(
+            new TrackerConfig { Backend = state.Item.Url is null ? "local-markdown" : "github" },
+            state, DateTimeOffset.Parse("2026-09-14T10:00:00Z"), true,
+            ActionAvailability.Available, ActionAvailability.Available));
 
     [Fact]
     public async Task Detail_output_surfaces_backend_neutral_custom_fields()

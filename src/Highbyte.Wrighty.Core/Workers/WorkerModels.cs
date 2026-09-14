@@ -71,7 +71,9 @@ public sealed record WorkerOperatorAction(
     // A second, distinct snippet that is pasted into the opened agent session (not run in the
     // terminal). Rendered as its own code block after Commands so the two destinations are not
     // conflated, and so a work-item id inside it is never auto-linked as prose.
-    string? AgentPrompt = null);
+    string? AgentPrompt = null,
+    string? Name = null,
+    string? Url = null);
 
 public sealed record WorkerEvent(
     string Type,
