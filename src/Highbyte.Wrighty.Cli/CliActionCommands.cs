@@ -28,15 +28,20 @@ public sealed partial class CliApplication
         command.Options.Add(yes);
         command.Options.Add(expected);
         command.SetAction((parsed, cancellationToken) => ExecuteAsync(parsed.GetValue(json),
-            config => RunActionCommandAsync(config, parsed.GetValue(id)!, parsed.GetValue(name),
-                parsed.GetValue(all), parsed.GetValue(exec), parsed.GetValue(yes),
-                parsed.GetValue(expected), parsed.GetValue(json), cancellationToken), cancellationToken));
+            config => RunActionCommandAsync(config, new ActionCommandRequest(
+                parsed.GetValue(id)!, parsed.GetValue(name), parsed.GetValue(all), parsed.GetValue(exec),
+                parsed.GetValue(yes), parsed.GetValue(expected), parsed.GetValue(json)),
+                cancellationToken), cancellationToken));
         return command;
     }
 
-    private async Task RunActionCommandAsync(TrackerConfig config, string id, string? selected,
-        bool all, bool execute, bool yes, string? expectedVersion, bool json, CancellationToken cancellationToken)
+    private sealed record ActionCommandRequest(
+        string Id, string? Name, bool All, bool Execute, bool Yes, string? ExpectedVersion, bool Json);
+
+    private async Task RunActionCommandAsync(TrackerConfig config, ActionCommandRequest request,
+        CancellationToken cancellationToken)
     {
+        var (id, selected, all, execute, yes, expectedVersion, json) = request;
         ValidateActionOptions(selected, all, execute, yes, expectedVersion);
         var itemId = tracker.ResolveId(config, id);
         var state = await tracker.GetOperationalAsync(config, itemId, cancellationToken);
