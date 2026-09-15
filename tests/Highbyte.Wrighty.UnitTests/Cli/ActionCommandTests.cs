@@ -83,7 +83,8 @@ public sealed partial class CliApplicationTests
             : ["actions", "42", "--exec", "--json"];
         Assert.Equal(2, await Application(backend, new StringReader("yes"), output, error).InvokeAsync(args));
         using var json = JsonDocument.Parse(error.ToString());
-        Assert.Equal("ACTION_EXECUTION_UNSUPPORTED", json.RootElement.GetProperty("error").GetProperty("code").GetString());
+        Assert.Equal(selected ? "ACTION_EXECUTION_UNSUPPORTED" : "ARGUMENT_INVALID",
+            json.RootElement.GetProperty("error").GetProperty("code").GetString());
         Assert.Null(backend.Patch);
     }
 

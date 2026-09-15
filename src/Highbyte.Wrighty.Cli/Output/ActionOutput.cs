@@ -1,4 +1,5 @@
 using Highbyte.Wrighty.Actions;
+using Highbyte.Wrighty.Workers;
 
 namespace Highbyte.Wrighty.Cli.Output;
 
@@ -17,6 +18,22 @@ public sealed partial class OutputWriter
             await output.WriteLineAsync("No available actions.");
         foreach (var action in discovery.Actions)
             await WriteActionAsync(action);
+    }
+
+    public async Task WriteWorkflowActionAsync(WorkflowActionResult result, WorkerDiscovery? workers,
+        string? refreshError, bool json)
+    {
+        if (json)
+        {
+            await WriteJsonAsync(new { schemaVersion = 1, result, workers, refreshError });
+            return;
+        }
+        await output.WriteLineAsync($"{result.Action} applied to {result.ItemId}: " +
+            $"{result.Before.Status} → {result.After.Status}; {result.After.OperationalStatus}.");
+        await output.WriteLineAsync($"Automatic execution: {result.After.AutomaticExecutionAllowed}. No worker started.");
+        if (workers is not null) await WriteWorkersAsync(workers, false);
+        if (refreshError is not null)
+            await output.WriteLineAsync("Action applied; worker assessment could not be refreshed. Inspect before retrying.");
     }
 
     private async Task WriteActionAsync(OperationalAction action)

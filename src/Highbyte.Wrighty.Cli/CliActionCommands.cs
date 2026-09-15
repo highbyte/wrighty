@@ -16,25 +16,85 @@ public sealed partial class CliApplication
         var name = new Argument<string?>("action-name") { Arity = ArgumentArity.ZeroOrOne };
         var all = new Option<bool>("--all") { Description = "Include unavailable actions and their reasons." };
         var json = JsonOption();
-        var exec = new Option<bool>("--exec") { Description = "Reserved; action execution is not supported yet." };
-        var command = new Command("actions", "Discover the actions available for a work item (read-only)");
+        var exec = new Option<bool>("--exec") { Description = "Execute one supported workflow action after revalidation." };
+        var yes = new Option<bool>("--yes") { Description = "Authorize the selected action without prompting." };
+        var expected = new Option<string?>("--expected-version") { Description = "Require the state version returned by action discovery." };
+        var command = new Command("actions", "Discover or explicitly execute a work item action");
         command.Arguments.Add(id);
         command.Arguments.Add(name);
         command.Options.Add(all);
         command.Options.Add(json);
         command.Options.Add(exec);
-        command.SetAction((parsed, cancellationToken) => ExecuteAsync(parsed.GetValue(json), async config =>
-        {
-            if (parsed.GetValue(exec))
-                throw new TrackerException("ACTION_EXECUTION_UNSUPPORTED",
-                    "Action discovery is read-only; use the documented focused command after review.", 2);
-            var itemId = tracker.ResolveId(config, parsed.GetValue(id)!);
-            var state = await tracker.GetOperationalAsync(config, itemId, cancellationToken);
-            var discovery = await DiscoverActionsAsync(config, state, cancellationToken);
-            var shown = SelectActions(discovery, parsed.GetValue(name), parsed.GetValue(all));
-            await writer.WriteActionsAsync(shown, parsed.GetValue(json));
-        }, cancellationToken));
+        command.Options.Add(yes);
+        command.Options.Add(expected);
+        command.SetAction((parsed, cancellationToken) => ExecuteAsync(parsed.GetValue(json),
+            config => RunActionCommandAsync(config, new ActionCommandRequest(
+                parsed.GetValue(id)!, parsed.GetValue(name), parsed.GetValue(all), parsed.GetValue(exec),
+                parsed.GetValue(yes), parsed.GetValue(expected), parsed.GetValue(json)),
+                cancellationToken), cancellationToken));
         return command;
+    }
+
+    private sealed record ActionCommandRequest(
+        string Id, string? Name, bool All, bool Execute, bool Yes, string? ExpectedVersion, bool Json);
+
+    private async Task RunActionCommandAsync(TrackerConfig config, ActionCommandRequest request,
+        CancellationToken cancellationToken)
+    {
+        var (id, selected, all, execute, yes, expectedVersion, json) = request;
+        ValidateActionOptions(selected, all, execute, yes, expectedVersion);
+        var itemId = tracker.ResolveId(config, id);
+        var state = await tracker.GetOperationalAsync(config, itemId, cancellationToken);
+        var discovery = await DiscoverActionsAsync(config, state, cancellationToken);
+        var shown = SelectActions(discovery, selected, all);
+        if (!execute)
+        {
+            await writer.WriteActionsAsync(shown, json);
+            return;
+        }
+        await ConfirmWorkflowActionAsync(shown.Actions.Single(), yes, json, cancellationToken);
+        config = await configLoader.LoadAsync(workingDirectory, cancellationToken);
+        var result = await new WorkflowActionService(tracker).ExecuteAsync(config, itemId, selected!,
+            expectedVersion ?? discovery.StateVersion, cancellationToken);
+        await WriteExecutedActionAsync(config, result, json, cancellationToken);
+    }
+
+    private static void ValidateActionOptions(string? selected, bool all, bool execute, bool yes, string? expectedVersion)
+    {
+        if (execute && (selected is null || all))
+            throw new TrackerException("ARGUMENT_INVALID", "--exec requires one action name and cannot use --all.", 2);
+        if (!execute && (yes || expectedVersion is not null))
+            throw new TrackerException("ARGUMENT_INVALID", "--yes and --expected-version require --exec.", 2);
+        if (execute) WorkflowActionService.EnsureSupported(selected!);
+    }
+
+    private async Task WriteExecutedActionAsync(TrackerConfig config, WorkflowActionResult result, bool json,
+        CancellationToken cancellationToken)
+    {
+        WorkerDiscovery? workers = null;
+        string? refreshError = null;
+        try { workers = await ReadWorkersAsync(config, result.ItemId, cancellationToken); }
+        catch (Exception exception) when (exception is TrackerException or IOException or UnauthorizedAccessException or OperationCanceledException)
+        {
+            // The mutation succeeded. Failed follow-up inspection must not invite replay.
+            refreshError = "WORKER_REFRESH_UNAVAILABLE";
+        }
+        await writer.WriteWorkflowActionAsync(result, workers, refreshError, json);
+    }
+
+    private async Task ConfirmWorkflowActionAsync(OperationalAction action, bool yes, bool json,
+        CancellationToken cancellationToken)
+    {
+        if (yes) return;
+        if (json || isInputRedirected())
+            throw new TrackerException("ACTION_CONFIRMATION_REQUIRED",
+                $"{action.Description} Pass --yes to authorize this operation.", 2);
+        await output.WriteLineAsync(action.Description);
+        await output.WriteAsync($"Confirm {action.Title}? [y/N] ");
+        var answer = await input.ReadLineAsync(cancellationToken);
+        if (!string.Equals(answer, "y", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(answer, "yes", StringComparison.OrdinalIgnoreCase))
+            throw new TrackerException("ACTION_CONFIRMATION_REQUIRED", "The action was cancelled.", 2);
     }
 
     private static OperationalActionDiscovery SelectActions(

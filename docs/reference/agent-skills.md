@@ -185,3 +185,9 @@ shared action discovery, and scoped worker/pickup assessment. `list --json` keep
 and adds `listing` metadata: status order, archive/filter/limit scope, returned count, and whether
 the result may be truncated. See [worker discovery](workers.md). Update an installed skill through
 the existing `wrighty skill update` command to receive these workflows.
+
+The bundled skill also executes individual Local Markdown Queue, Send back, and Resume requests
+through `actions <id> <name> --exec --yes --expected-version <stateVersion> --json`, after the
+requested effect is authorized. CLI and web share eligibility and locked revalidation. Execution
+returns the resulting state and refreshed worker pickup evidence; it does not launch a worker.
+See [action execution](actions.md).

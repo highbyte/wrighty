@@ -149,7 +149,9 @@ public sealed class OperationalActionResolverTests
         var result = Resolve(Paused() with { OperationalStatus = status });
         Assert.Null(result.RecommendedAction);
         Assert.Equal("available", Find(result, action).Availability);
-        Assert.All(result.Actions, value => Assert.Equal("manual-only", value.Execution));
+        Assert.Equal("manual-only", Find(result, action).Execution);
+        Assert.All(result.Actions.Where(value => value.Execution == "supported"),
+            value => Assert.True(value.Name is "queue" or "send-back" or "resume"));
         Assert.Equal(result.Actions.Count, result.Actions.Select(value => value.Name).Distinct().Count());
     }
 
