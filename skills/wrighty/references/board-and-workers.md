@@ -34,10 +34,36 @@ Retry-scheduled and handoff-queued work is deferred; do not classify it as await
 
 Use `wrighty actions <id> --json` for available actions; add `--all` when the user asks why an
 alternative is unavailable. Use action names, reasons, recommendation, and execution metadata
-from the response. A recommendation is advice, not execution authority. The current catalogue is
-manual-only: `actions --exec` refuses execution. Queue/Send back/Resume descriptors currently
-refer to the matching web Board operations; do not substitute a generic move or direct Markdown
-edit to imitate an unavailable typed operation.
+from the response. A recommendation is advice, not execution authority.
+
+## Individual workflow actions
+
+For an authorized Queue, Send back, or Resume request, inspect the selected action and its
+consequence with `wrighty actions <id> <name> --json`. On Local Markdown, these actions report
+`execution: "supported"`. Explain any automatic-processing consequence if the user's request has
+not already authorized it; do not add another confirmation once that exact effect is authorized.
+Then execute the stable name with the returned `result.stateVersion`:
+
+```shell
+wrighty actions <id> queue --exec --yes --expected-version <stateVersion> --json
+```
+
+Use `send-back` or `resume` for those intents. Queue authorizes automatic processing when the
+worker-queue policy is enabled; Send back revokes that authorization. With that policy disabled,
+execution authorization stays independent. Resume queues the recorded session and preserves the
+requirements, context, and execution selection; it does not start a worker. Interactive
+`resume-session` is a different action and remains manual-only in this catalogue.
+
+The command revalidates current state under the backend's mutation lock. On `ACTION_STATE_CHANGED`,
+claim contention, missing session, or backend refusal, inspect again and report the specific reason.
+Do not force takeover, substitute another action, or imitate these operations with a generic
+status move or direct Markdown edit. These executors currently support Local Markdown only.
+
+Read `result.outcome`, `before`, and `after` to report the applied transition, then use `workers`
+for refreshed pickup prospects. An applied result with `refreshError` means the mutation succeeded
+but worker assessment failed: inspect again without replaying the mutation. If a command fails
+without a definitive outcome, re-read the item before any retry. Other catalogue entries remain
+manual-only; use their documented focused procedure only within the user's authorization.
 
 ## Workers and pickup prospects
 

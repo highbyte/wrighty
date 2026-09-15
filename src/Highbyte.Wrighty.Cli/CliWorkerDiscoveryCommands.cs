@@ -21,6 +21,10 @@ public sealed partial class CliApplication
 
     private async Task InspectWorkersAsync(TrackerConfig config, string? item, bool json,
         CancellationToken cancellationToken)
+        => await writer.WriteWorkersAsync(await ReadWorkersAsync(config, item, cancellationToken), json);
+
+    private async Task<WorkerDiscovery> ReadWorkersAsync(TrackerConfig config, string? item,
+        CancellationToken cancellationToken)
     {
         var configurationPath = config.SourcePath ?? Path.Combine(workingDirectory, TrackerConfigLoader.FileName);
         var snapshot = await workerInstances.InspectAsync(configurationPath, cancellationToken);
@@ -39,7 +43,7 @@ public sealed partial class CliApplication
                         snapshot.ObservedAt, cancellationToken);
             workers.Add(WorkerDiscoveryEntry.From(status, revision, pickup));
         }
-        await writer.WriteWorkersAsync(new(snapshot.ObservedAt, snapshot.ConfigurationPathHash,
-            snapshot.Coverage, snapshot.Detail, revision, state?.Item.Id.Value, workers), json);
+        return new(snapshot.ObservedAt, snapshot.ConfigurationPathHash,
+            snapshot.Coverage, snapshot.Detail, revision, state?.Item.Id.Value, workers);
     }
 }

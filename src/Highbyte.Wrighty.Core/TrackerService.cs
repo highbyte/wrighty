@@ -245,31 +245,8 @@ public sealed class TrackerService(
         if (current is null)
             return new WorkerQueueRuleResult(patch, false); // the update itself reports not-found
 
-        var entersQueue = IsPickFrom(config, patch.Status.Value) &&
-                          !IsPickFrom(config, current.Status);
-        var leavesQueue = !IsPickFrom(config, patch.Status.Value) &&
-                          IsPickFrom(config, current.Status);
-        if (entersQueue)
-        {
-            return new WorkerQueueRuleResult(
-                patch with { AutomaticExecutionAllowed = OptionalValue<bool>.From(true) },
-                CycleContextApproval: current.ContextApprovalFieldApproved is not null);
-        }
-        if (leavesQueue)
-        {
-            return new WorkerQueueRuleResult(
-                patch with { AutomaticExecutionAllowed = OptionalValue<bool>.From(false) },
-                false);
-        }
-        return new WorkerQueueRuleResult(patch, false);
+        return WorkerQueuePolicy.Apply(config, current.Status, current.ContextApprovalFieldApproved, patch);
     }
-
-    private readonly record struct WorkerQueueRuleResult(
-        WorkItemPatch Patch,
-        bool CycleContextApproval);
-
-    private static bool IsPickFrom(TrackerConfig config, string? status) =>
-        string.Equals(status, config.DefaultPickFrom, StringComparison.OrdinalIgnoreCase);
 
     public Task<DashboardSnapshot> GetDashboardAsync(
         TrackerConfig config,

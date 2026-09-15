@@ -1,4 +1,4 @@
-# Action discovery
+# Action discovery and workflow execution
 
 Use `wrighty actions` to inspect what you can do with an item before choosing an operation:
 
@@ -15,10 +15,39 @@ reason codes. An optional action name selects one descriptor; an unknown name re
 Wrighty's normal nonzero exit status and stderr JSON contract. Do not combine a selected name with
 `--all`.
 
-Discovery is read-only. All descriptors currently report `execution: "manual-only"`, and `--exec`
-returns `ACTION_EXECUTION_UNSUPPORTED`. Review the displayed guidance and use the existing focused
-CLI command or web control when you have authorized the operation. Listing an action never claims
-an item, starts a vendor session, grants permission, or overrides a pending retry.
+Discovery is read-only. Queue, Send back, and Resume report `execution: "supported"`; other
+catalogue entries remain `manual-only`. Listing an action never claims an item, starts a vendor
+session, grants permission, or overrides a pending retry.
+
+## Execute one workflow action
+
+```shell
+wrighty actions local:42 queue --json
+wrighty actions local:42 queue --exec --yes --expected-version <stateVersion> --json
+wrighty actions local:42 send-back --exec --yes --json
+wrighty actions local:42 resume --exec --yes --json
+```
+
+These three executors support Local Markdown and share the web Board's policy and backend
+operation. `--exec` requires one action name and cannot use `--all`. An interactive invocation
+shows the consequence and prompts; redirected input and JSON require `--yes`. This authorizes
+only the named operation. Neither discovery nor `--yes` grants takeover or starts a worker.
+
+Supply the discovery's `stateVersion` with `--expected-version` when executing a reviewed
+snapshot. Wrighty always reads current state again, then validates and mutates under the local
+store lock. A changed item, claim, session, or configuration refuses the old version with
+`ACTION_STATE_CHANGED` (or the current action's more specific refusal). The fingerprint is not a
+reservation or a credential. Without it, execution uses a fresh observation from this invocation.
+Manual-only actions still return `ACTION_EXECUTION_UNSUPPORTED`; commands, URLs, and item text
+are never interpreted as executors or shell input.
+
+Execution JSON has `schemaVersion: 1` and a `result` with `itemId`, `action`, `outcome: "applied"`,
+`observedAt`, `stateVersion`, `before`, `after`, and `startsWorker: false`. Each state contains the
+workflow status, operational status, execution authorization, and dispatch marker. `workers`
+contains a fresh pickup assessment after mutation. If that follow-up fails, `refreshError` is
+`WORKER_REFRESH_UNAVAILABLE` and the result still says applied; inspect before attempting another
+mutation. A worker may claim the item immediately afterward, so even a successful result remains
+an observation rather than a reservation.
 
 ## Action vocabulary
 
@@ -37,7 +66,7 @@ an item, starts a vendor session, grants permission, or overrides a pending retr
 | `inspect-recovery` | Read the item and operational status for current recovery details. |
 
 Names are stable selectors; titles and descriptions are presentation. Queue, Send back, and Resume
-currently describe the corresponding Board controls; they do not have generic CLI executors.
+share the corresponding Board controls' eligibility and execution path.
 With worker-queue authorization enabled, Queue authorizes automatic processing and Send back revokes
 that authorization. When it is disabled, execution policy remains independent. Resume queues the
 recorded session and does not start a worker. These actions are not interchangeable status moves.
@@ -50,7 +79,7 @@ process immediately. Recommendations never authorize execution.
 
 `--json` returns `schemaVersion: 1` and `result` containing:
 
-- `itemId`, `stateObservedAt`, and nullable `recommendedAction`;
+- `itemId`, `stateObservedAt`, `stateVersion`, and nullable `recommendedAction`;
 - `actions[]` with `name`, `title`, `description`, and `recommended`;
 - `availability`, `unavailableCode`, and `unavailableReason`;
 - `kind`, `execution`, `confirmation`, `requiresTty`, and `startsProcess`; and

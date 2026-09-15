@@ -42,7 +42,7 @@ public static class OperationalActionResolver
                 surface.HasDiscussion ? "url" : "local-process", startsProcess: !surface.HasDiscussion)
         ];
         AddClarificationActions(context, surface, guidance, actions);
-        AddBoardActions(context, actions);
+        actions.AddRange(BoardActions(context));
         var workerAvailability = WorkerAvailability(context);
         if (state.OperationalStatus != OperationalStatuses.RetryScheduled)
             actions.Add(OperationalAction.FromGuidance(
@@ -69,7 +69,8 @@ public static class OperationalActionResolver
             : null;
         return new(id.Value, context.ObservedAt, recommended,
             actions.Select(value => value with { Recommended = value.Name == recommended })
-                .OrderByDescending(value => value.Recommended).ToArray());
+                .OrderByDescending(value => value.Recommended).ToArray(),
+            WorkflowActionService.Version(config, state));
     }
 
     private static void AddClarificationActions(
@@ -102,8 +103,9 @@ public static class OperationalActionResolver
         }
     }
 
-    private static void AddBoardActions(OperationalActionContext context, List<OperationalAction> actions)
+    public static IReadOnlyList<OperationalAction> BoardActions(OperationalActionContext context)
     {
+        List<OperationalAction> actions = [];
         var (config, state) = (context.Config, context.State);
         var common = BoardAvailability(config, state);
         var untouched = FirstBlocked(common, UntouchedAvailability(state));
@@ -121,6 +123,7 @@ public static class OperationalActionResolver
         var resume = FirstBlocked(common, FirstBlocked(SessionAvailability(context), ResumeQueueAvailability(config, state)));
         actions.Add(BoardAction("resume", "Resume", "Queue the recorded session for a continuous worker. " +
             "This does not start a worker or change the requirements.", resume));
+        return actions;
     }
 
     private static ActionAvailability BoardAvailability(TrackerConfig config, WorkItemOperationalState state)
@@ -166,8 +169,8 @@ public static class OperationalActionResolver
 
     private static OperationalAction BoardAction(string name, string title, string description,
         ActionAvailability availability) => OperationalAction.FromGuidance(
-            new WorkerOperatorAction(title, [], description + " Use the corresponding Board action in wrighty web.",
-                Name: name), availability, confirmation: ConfirmationRequired);
+            new WorkerOperatorAction(title, [], description, Name: name), availability,
+            confirmation: ConfirmationRequired) with { Execution = "supported" };
 
     private static ActionAvailability EditAvailability(WorkItemOperationalState state)
     {

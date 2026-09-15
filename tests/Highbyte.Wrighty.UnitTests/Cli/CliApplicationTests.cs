@@ -4292,7 +4292,8 @@ public sealed partial class CliApplicationTests : IDisposable
         StorageLocationCatalog? storageLocationCatalog = null,
         AgentRegistry? agentRegistry = null,
         IWebSkillMaintenance? skillMaintenance = null,
-        ILogger<CliApplication>? logger = null)
+        ILogger<CliApplication>? logger = null,
+        TrackerService? trackerOverride = null)
     {
         var effectiveAgentRegistry = agentRegistry ?? BuiltInAgentRegistry.Create(
             new PathExecutableResolver());
@@ -4304,7 +4305,7 @@ public sealed partial class CliApplicationTests : IDisposable
             claims,
             resolver,
             backend);
-        var tracker = new TrackerService(
+        var tracker = trackerOverride ?? new TrackerService(
             new TrackerBackendRegistry([trackerBackend]),
             effectiveAgentRegistry);
         return new CliApplication(

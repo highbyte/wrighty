@@ -19,8 +19,7 @@ public sealed record OperationalAction(
     string? AgentPrompt = null,
     bool Recommended = false)
 {
-    // The foundation deliberately has no executors, including for otherwise available actions.
-    public string Execution { get; } = "manual-only";
+    public string Execution { get; init; } = "manual-only";
 
     public static OperationalAction FromGuidance(
         WorkerOperatorAction guidance,
@@ -48,4 +47,5 @@ public sealed record OperationalActionDiscovery(
     string ItemId,
     DateTimeOffset StateObservedAt,
     string? RecommendedAction,
-    IReadOnlyList<OperationalAction> Actions);
+    IReadOnlyList<OperationalAction> Actions,
+    string? StateVersion = null);

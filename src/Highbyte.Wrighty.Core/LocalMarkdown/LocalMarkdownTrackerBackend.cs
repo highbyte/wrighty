@@ -24,7 +24,8 @@ public sealed partial class LocalMarkdownTrackerBackend(
     ITrackerBackend,
     ITrackerDashboardBackend,
     ILocalMarkdownImportBackend,
-    IWorkItemDeletionBackend
+    IWorkItemDeletionBackend,
+    Highbyte.Wrighty.Actions.IWorkflowActionBackend
 {
     private const string GitIgnoreComment = "# Wrighty runtime state";
     private static readonly string[] GitIgnoreRules =
@@ -1756,6 +1757,13 @@ public sealed partial class LocalMarkdownTrackerBackend(
         var paths = Paths(config);
         await using var storeLock = await LocalStoreLock.AcquireAsync(paths.Root, cancellationToken);
         var document = await RequiredUnlockedAsync(config, id, cancellationToken);
+        await QueuePausedUnlockedAsync(config, id, paths, document, cancellationToken);
+    }
+
+    private async Task QueuePausedUnlockedAsync(
+        TrackerConfig config, WorkItemId id, LocalStorePaths paths,
+        LocalMarkdownDocument document, CancellationToken cancellationToken)
+    {
         if (document.Archived)
             throw Archived(id);
         if (!string.Equals(document.DispatchState, DispatchStates.NeedsAttention,

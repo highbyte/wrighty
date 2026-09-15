@@ -1,3 +1,4 @@
+using Highbyte.Wrighty.Actions;
 using Highbyte.Wrighty.AgentContext;
 using Highbyte.Wrighty.ApprovedContext;
 using Highbyte.Wrighty.Backends;
@@ -33,6 +34,7 @@ public sealed class IndexModel(
     private const string WorkerOverviewPartial = "Shared/_WorkerOverview";
     private const string QueueActionId = "queue";
     private const string DequeueActionId = "dequeue";
+    private const string SendBackActionName = "send-back";
     private const string ResumeActionId = "resume";
     private static readonly JsonSerializerOptions IndentedJson = new() { WriteIndented = true };
     private readonly BoardBatchStore boardBatches = state.BoardBatches;
@@ -2941,10 +2943,8 @@ public sealed class IndexModel(
     }
 
     /// <summary>
-    /// The board's one-click queue action: claim, move to the pick-from status, release. The
-    /// status move runs through the tracker service, so with the worker queue enabled the move
-    /// authorizes execution and, on GitHub, context approval — the button is the whole "give this
-    /// to the worker" ceremony.
+    /// The board's one-click queue action uses the same locked eligibility check and workflow
+    /// operation as the CLI. With the worker queue enabled, the move authorizes execution.
     /// </summary>
     public async Task<IActionResult> OnPostQueueItemAsync(
         string id,
@@ -2967,33 +2967,8 @@ public sealed class IndexModel(
 
     private async Task QueueItemAsync(string id, CancellationToken cancellationToken)
     {
-        var resolved = tracker.ResolveId(state.Config, id);
-        var claim = await tracker.ClaimAsync(
-            state.Config, resolved, state.ClaimantContext, cancellationToken);
-        var handle = new ClaimHandle(
-            state.ClaimantContext with { ClaimantId = claim.ClaimantId },
-            claim.ClaimToken);
-        try
-        {
-            await tracker.UpdateAsync(
-                state.Config,
-                resolved,
-                WorkItemPatch.StatusOnly(state.Config.DefaultPickFrom),
-                expectedRevision: null,
-                handle,
-                cancellationToken);
-        }
-        catch (TrackerException)
-        {
-            // The claim was only scaffolding for this one move; do not leave the item claimed
-            // behind a failed update. A failing release must not mask the update error.
-            await ReleaseScaffoldingClaimAsync(resolved, handle, cancellationToken);
-            throw;
-        }
-
-        await tracker.ReleaseAsync(
-            state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
-            cancellationToken);
+        await new WorkflowActionService(tracker).ExecuteAsync(state.Config,
+            tracker.ResolveId(state.Config, id), QueueActionId, null, cancellationToken);
     }
 
     // Both sides are nullable: a work item's status may be absent, and so may the status it is
@@ -3034,24 +3009,19 @@ public sealed class IndexModel(
     /// Most states offer one action, because a board's value is scanning and a toolbar per card
     /// destroys that. Needs-attention is the exception: there the next step genuinely branches —
     /// answer the question, or hand it back — so it carries a small set. The list shape is what
-    /// plan 036's catalogue will fill later.
+    /// the shared catalogue supplies for migrated workflow actions.
     /// </summary>
     private IReadOnlyList<CardActionView> CardActions(
         DashboardWorkItem value,
-        string activity,
-        IReadOnlyList<string> statuses)
+        string activity)
     {
         if (value.Item.Archived)
             return [];
 
-        // Queueable: an untouched backlog item — unclaimed, no recovery state, and not already in
-        // the queue, in progress, or finished. For the default statuses that is exactly the first
-        // (backlog) column.
-        if (value.Claim.State == ClaimOwnershipState.Unclaimed &&
-            value.Item.DispatchState is null &&
-            !IsWorkflowStatus(value.Item.Status, state.Config.DefaultPickFrom) &&
-            !IsWorkflowStatus(value.Item.Status, state.Config.DefaultPickTo) &&
-            !IsWorkflowStatus(value.Item.Status, state.Config.DefaultFinishTo))
+        var boardActions = BoardWorkflowActions(value);
+        var queue = boardActions.Single(action => action.Name == QueueActionId);
+        var sendBack = boardActions.Single(action => action.Name == SendBackActionName);
+        if (queue.Availability == "available")
         {
             // Two next moves, so two actions — the same shape as a needs-attention card. Editing
             // an item you can see took opening the panel and then claiming; the panel's claim
@@ -3065,7 +3035,7 @@ public sealed class IndexModel(
                     QueueActionId,
                     "QueueItem",
                     "Queue",
-                    "Move to the worker queue so an agent can pick it up",
+                    queue.Description,
                     "for agent"),
                 new CardActionView(
                     "edit",
@@ -3081,24 +3051,17 @@ public sealed class IndexModel(
 
         // In the queue and untouched: the symmetric revocation. Once a worker has claimed it or
         // recorded recovery state, taking it back is no longer a one-gesture decision.
-        if (IsWorkflowStatus(value.Item.Status, state.Config.DefaultPickFrom) &&
-            value.Claim.State == ClaimOwnershipState.Unclaimed &&
-            value.Item.DispatchState is null)
+        if (sendBack.Availability == "available" || sendBack.UnavailableCode == "STATUS_UNAVAILABLE")
         {
-            var backlog = BacklogStatus(statuses);
             return
             [
                 new CardActionView(
                     DequeueActionId,
                     "DequeueItem",
                     "Send back",
-                    backlog is null
-                        ? "Move out of the worker queue; the queue rule revokes automatic execution"
-                        : $"Move back to {backlog}; the worker queue rule revokes automatic execution",
+                    sendBack.Description,
                     "out of the worker queue",
-                    UnavailableReason: backlog is null
-                        ? "No backlog status is configured to send this item back to."
-                        : null)
+                    UnavailableReason: sendBack.UnavailableReason)
             ];
         }
 
@@ -3121,6 +3084,17 @@ public sealed class IndexModel(
         }
 
         return DispatchMarkerActions(value, activity);
+    }
+
+    private IReadOnlyList<OperationalAction> BoardWorkflowActions(DashboardWorkItem value)
+    {
+        var item = value.Item;
+        var detail = new WorkItemDetail(item.Id, item.Title, "", item.Url, item.Status, item.Priority,
+            Archived: item.Archived, AutomaticExecutionAllowed: item.AutomaticExecutionAllowed,
+            DispatchState: item.DispatchState);
+        var operational = WorkflowActionService.Operational(state.Config, new(detail, value.Claim, value.Session));
+        return OperationalActionResolver.BoardActions(new(state.Config, operational, DateTimeOffset.UtcNow,
+            value.Session?.WorkspacePath is { } path && Directory.Exists(path)));
     }
 
     private IReadOnlyList<CardActionView> NeedsAttentionCardActions(
@@ -3160,13 +3134,15 @@ public sealed class IndexModel(
                       "session will remain available to resume afterward."
                     : null,
                 ConfirmAction: requiresConfirmedTakeover ? "Open for clarification" : null));
+            var resume = BoardWorkflowActions(value).Single(action => action.Name == ResumeActionId);
             actions.Add(new CardActionView(
                 ResumeActionId,
                 "ResumeSession",
                 "Resume",
-                "Queue the recorded session so a continuous worker resumes it",
+                resume.Description,
                 "recorded session",
-                IsPrimary: false));
+                IsPrimary: false,
+                UnavailableReason: resume.UnavailableReason));
         }
 
         actions.AddRange(LaunchCardActions(value, session));
@@ -3517,6 +3493,19 @@ public sealed class IndexModel(
                           $"only '{state.Config.DefaultFinishTo}' may end. Use the item's own " +
                           "actions instead.",
                     6);
+            string? workflowAction = null;
+            if (IsWorkflowStatus(target, state.Config.DefaultPickFrom))
+                workflowAction = QueueActionId;
+            else if (IsWorkflowStatus(card.Item.Status, state.Config.DefaultPickFrom) &&
+                     IsWorkflowStatus(target, BacklogStatus(snapshot.Statuses)))
+                workflowAction = SendBackActionName;
+            if (workflowAction is not null)
+            {
+                await new WorkflowActionService(tracker).ExecuteAsync(
+                    state.Config, resolved, workflowAction, null, cancellationToken);
+                Response.Headers["HX-Trigger"] = "wrighty:refresh";
+                return new NoContentResult();
+            }
             var claim = await tracker.ClaimAsync(
                 state.Config, resolved, state.ClaimantContext, cancellationToken);
             var handle = new ClaimHandle(
@@ -3575,41 +3564,8 @@ public sealed class IndexModel(
 
     private async Task DequeueItemAsync(string id, CancellationToken cancellationToken)
     {
-        var resolved = tracker.ResolveId(state.Config, id);
-        var snapshot = await tracker.GetDashboardAsync(
-            state.Config, ArchiveScope.Active, cancellationToken);
-        var backlog = BacklogStatus(snapshot.Statuses)
-            ?? throw new TrackerException(
-                "STATUS_UNAVAILABLE",
-                "No backlog status is configured to send this item back to.",
-                2);
-        var claim = await tracker.ClaimAsync(
-            state.Config, resolved, state.ClaimantContext, cancellationToken);
-        var handle = new ClaimHandle(
-            state.ClaimantContext with { ClaimantId = claim.ClaimantId },
-            claim.ClaimToken);
-        try
-        {
-            await tracker.UpdateAsync(
-                state.Config,
-                resolved,
-                WorkItemPatch.StatusOnly(backlog),
-                expectedRevision: null,
-                handle,
-                cancellationToken);
-        }
-        catch (TrackerException)
-        {
-            // Same discipline as the queue button: the claim was scaffolding for one move, so
-            // a failed move must not leave the item claimed, and a failing release must not
-            // mask the move's error.
-            await ReleaseScaffoldingClaimAsync(resolved, handle, cancellationToken);
-            throw;
-        }
-
-        await tracker.ReleaseAsync(
-            state.Config, resolved, handle, false, DispatchStateOnRelease.Preserve,
-            cancellationToken);
+        await new WorkflowActionService(tracker).ExecuteAsync(state.Config,
+            tracker.ResolveId(state.Config, id), SendBackActionName, null, cancellationToken);
     }
 
     /// <summary>
@@ -3638,7 +3594,8 @@ public sealed class IndexModel(
     private async Task ResumeSessionAsync(string id, CancellationToken cancellationToken)
     {
         var resolved = tracker.ResolveId(state.Config, id);
-        await tracker.QueuePausedAsync(state.Config, resolved, cancellationToken);
+        await new WorkflowActionService(tracker).ExecuteAsync(
+                state.Config, resolved, ResumeActionId, null, cancellationToken);
         state.Forget(resolved.Value);
     }
 
@@ -3783,7 +3740,7 @@ public sealed class IndexModel(
             item.Session,
             state.Config.DefaultFinishTo);
         var actionId = BoardBatchActionId(action);
-        return CardActions(item, activity, snapshot.Statuses).Any(value =>
+        return CardActions(item, activity).Any(value =>
             value.IsAvailable && string.Equals(value.Id, actionId, StringComparison.Ordinal));
     }
 
@@ -3799,7 +3756,8 @@ public sealed class IndexModel(
 
     private static bool IsBoardBatchItemConflict(TrackerException exception) =>
         exception.Code is "WORK_ITEM_NOT_FOUND" or "WORK_ITEM_ARCHIVED" or
-            "CLAIM_NOT_OWNER" or "WORKER_ITEM_INELIGIBLE" or
+            "CLAIM_NOT_OWNER" or "WORKER_ITEM_INELIGIBLE" or "ACTION_STATE_CHANGED" or
+            "WORKFLOW_STATE_INVALID" or "WORKER_RECOVERY_PENDING" or "ITEM_ARCHIVED" or
             "RESUME_ADDRESS_NOT_LOCAL" ||
         Status(exception) == StatusCodes.Status409Conflict;
 
@@ -3870,7 +3828,8 @@ public sealed class IndexModel(
         try
         {
             var resolved = tracker.ResolveId(state.Config, id);
-            await tracker.QueuePausedAsync(state.Config, resolved, cancellationToken);
+            await new WorkflowActionService(tracker).ExecuteAsync(
+                state.Config, resolved, ResumeActionId, null, cancellationToken);
             state.Forget(resolved.Value);
             Response.Headers["HX-Trigger"] = "wrighty:refresh";
             return Partial(
@@ -4311,14 +4270,8 @@ public sealed class IndexModel(
                 WorkItemDeletionPolicy.HasProcessingHistory(operational.Session)).CanDelete;
         var lastRun = LastRunView.From(session);
         var providerBlock = await ProviderBlockAsync(item, activity, cancellationToken);
-        var canQueueForWorker =
-            !item.Archived &&
-            activity == OperationalStatuses.NeedsAttention &&
-            editable.Claim.State != ClaimOwnershipState.HeldByOther &&
-            item.AutomaticExecutionAllowed &&
-            string.Equals(item.Status, state.Config.DefaultPickTo,
-                StringComparison.OrdinalIgnoreCase) &&
-            session is { IsComplete: true, FromCurrentInstallation: true };
+        var canQueueForWorker = WorkflowActionService.Select(state.Config, operational, ResumeActionId)
+            .Availability == "available";
         string? claimProtectionNotice = null;
         if (webMutationProtected)
         {
@@ -4999,7 +4952,7 @@ public sealed class IndexModel(
                 activity,
                 value.HasRecordedWorktree,
                 providerBlock,
-                CardActions(value, activity, snapshot.Statuses),
+                CardActions(value, activity),
                 DropTargets(value, snapshot.Statuses),
                 value.Item.CreatedAt,
                 value.Item.UpdatedAt,
