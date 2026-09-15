@@ -638,6 +638,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
     {
         var host = await StartServer(
             openBrowser: false,
+            pickFrom: "Worker queue",
             workerConfig: new WorkerConfig
             {
                 DefaultAgent = "codex",
@@ -669,6 +670,11 @@ public sealed partial class WrightyWebServerTests : IDisposable
                 savedHtml);
             Assert.DoesNotContain("configuration-restart-warning", savedHtml);
 
+            // This layout test needs an idle worker. Todo contains seeded items and must not
+            // become the intake queue, otherwise the rejecting process runner can end the run.
+            var (config, backend, _) = await StoredBackend();
+            Assert.Empty(await backend.ListAsync(config,
+                new ListWorkItemsRequest(config.DefaultPickFrom, null), CancellationToken.None));
             var response = await PostForm(
                 client,
                 host,
