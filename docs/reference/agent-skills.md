@@ -72,6 +72,69 @@ Worker pickup is advisory: “could pick up” is not a reservation or a timing 
 current local configuration; remote, unregistered, and other-configuration workers can be outside
 that view. See [worker discovery and control](workers.md).
 
+## Example responses
+
+These exchanges were captured from Codex sessions using the bundled Wrighty skill against test
+trackers. The responses retain their Markdown formatting; the GitHub example is an excerpt.
+Each example uses a separate tracker state. Item names and IDs belong to the test data, and
+wording and layout can vary by agent and session.
+
+### Board overview and worker availability
+
+This Local Markdown request only inspects the board and registered workers.
+
+**You:**
+
+> $wrighty Show my active board grouped by workflow status. Include the total count in each column and the canonical item IDs. Also tell me whether any workers are running. This is an overview only.
+
+**Agent:**
+
+> Your active board has **3 items**, excluding archived items.
+>
+> | Workflow status | Total | Items |
+> |---|---:|---|
+> | Todo | 2 | `local:1` — Alpha API<br>`local:2` — Beta UI |
+> | Worker queue | 1 | `local:3` — Gamma tests |
+> | In Progress | 0 | — |
+> | Done | 0 | — |
+>
+> **Workers:** No registered workers were found in this board’s local configuration. Remote or unregistered workers are outside this check’s scope.
+>
+> No changes were made.
+
+### Queue specific items without starting a worker
+
+This Local Markdown request authorizes queueing exactly two items. Queueing allows automatic
+processing; it does not itself launch a worker. An eligible existing worker may pick up the items.
+
+**You:**
+
+> $wrighty Queue local:1 and local:2 for automatic processing. I authorize that queueing and eligibility change for exactly those two items. Leave local:3 unchanged, and do not start a worker.
+
+**Agent:**
+
+> Queued `local:1` and `local:2` in **Worker queue** with automatic processing enabled.
+>
+> Verified `local:3` is unchanged. No worker was started.
+
+### Explain an unsupported GitHub batch
+
+This GitHub request asks for a preview, without authorizing changes. The response excerpt below
+omits the preceding item table and preserves the explanation of the backend limitation.
+
+**You:**
+
+> $wrighty Preview queueing all Todo items for automatic processing as one reviewed batch. Show the exact selection and consequences before any execution. Do not change items or start a worker.
+
+**Agent (excerpt):**
+
+> **Batch preview is unsupported on this GitHub backend.** Wrighty returned `NOT_SUPPORTED`: “Batch workflow actions require Local Markdown.” Individual Queue consequence inspection is also unsupported.
+>
+> No frozen preview was created, so execution eligibility and exact consequences could not be verified. Nothing was changed, and no worker was started.
+
+For GitHub, use Issues and Project views for planning, and the supported Wrighty operations
+described in [capabilities by backend](#capabilities-by-backend) for processing and worker control.
+
 ## Worker ownership and stopping
 
 The skill launches only finite runs attached to their invoking command. It defaults to
