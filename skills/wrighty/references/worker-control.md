@@ -18,7 +18,9 @@ Choose a worker agent from explicit user intent, item policy, or configured defa
 hosting this conversation is not a default. Preserve configured workspace and profile choices
 unless the user requests an override. Never probe a paid vendor merely to check readiness.
 
-Use the smallest processing scope that meets the request:
+Default to one attached run: `--item <id>` for a named item or `--once` for the next eligible item.
+Use `--max-items N` only when the user explicitly requests processing a bounded number of eligible
+items. Include item and idle timeouts appropriate to that request and keep the run attached:
 
 ```shell
 wrighty worker --item <id> --item-timeout 30m --yes --json
@@ -30,30 +32,36 @@ wrighty worker --max-items 3 --idle-timeout 5m --item-timeout 30m --yes --json
 eligible item. Do not replace one with the other. Use `--agent`, `--profile`, `--filter name=value`,
 `--workspace-mode`, `--from`, and `--to` only within the requested scope. `--item-timeout` bounds each
 item, not the whole worker. `--max-items` bounds item count, and `--idle-timeout` bounds an idle
-period. A targeted run already has an effective item limit of one. Do not take over claims or force
+period. The count limit is not a total wall-clock deadline or a frozen selection of named items;
+the worker selects eligible work as it proceeds. Do not translate a request for specific IDs into
+`--max-items N`. A targeted run already has an effective item limit of one. Do not take over claims or force
 `--fresh`, `--resume`, or `--handoff` merely to get past a refusal.
 
 ## Own the process honestly
 
-For Codex, Claude, Copilot, and OpenCode surfaces, foreground execution is the portable path.
-Keep a bounded run attached to the invoking command, consuming its output through completion.
-For authorized continuous work, use a user-owned terminal or a host-provided retained terminal
-whose lifetime is established. For example, in that terminal:
+For Codex, Claude, Copilot, and OpenCode surfaces, keep every skill-launched run attached to its
+invoking command and consume its output through completion. Do not start a continuous worker,
+even when the user requests one or the host offers a retained terminal. An idle or item timeout
+alone does not make a continuous worker an allowed finite run. Do not emulate continuous work by
+repeatedly launching `--once` or `--max-items` runs or by scheduling a keepalive/relaunch loop.
+
+For continuous processing, give the user the foreground command to run in their own terminal, or
+direct them to **Start worker** in the web console. Explain that you have not started it. For example:
 
 ```shell
 wrighty worker --idle-timeout 30m --item-timeout 30m --yes --json
 ```
 
-State the terminal/process owner and its actual cancellation and exit behavior before launching.
-A retained terminal keeps the executable running without a model reasoning loop, but is not a
-promise of survival across task cancellation, app exit, logout, or restart. There is no Wrighty
-detach command. Do not emulate one with background shell syntax or invent a keepalive loop.
-If the available tool cannot retain the process for the required duration, provide the exact
-foreground command for the user's terminal and say it has not been started.
+For an allowed finite launch, state the invoking command/process owner and its actual cancellation
+and exit behavior. If the available tool cannot keep the run attached through completion, provide
+the command for the user's terminal instead. Do not promise survival across task cancellation,
+app exit, logout, or restart. There is no Wrighty detach command; do not emulate one with background
+shell syntax, a detached session, or a terminal-opening tool.
 
-Existing web-hosted runs can also provide continuous processing. Their launch remains in the web
-console; starting `wrighty web` alone does not start a worker. Do not spoof its browser requests.
-No vendor-specific detached launch path is offered by this skill.
+The skill may inspect, assess pickup from, drain, or interrupt existing continuous workers within
+the user's authorization. Web-hosted launches remain a user action in the web console; do not
+launch one through browser automation or spoofed requests. Starting `wrighty web` alone does not
+start a worker. No vendor-specific detached launch path is offered by this skill.
 
 Worker-spawned sessions must not start workers recursively. `WRIGHTY_WORKER_CHILD=1` marks that
 context and live launch returns `WORKER_RECURSIVE_LAUNCH`; do not remove the marker to bypass it.

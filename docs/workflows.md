@@ -1,10 +1,11 @@
 # Wrighty workflows
 
 Wrighty supports interactive agent work, unattended worker processing, and human intervention
-without making those separate systems. The CLI and web console read and mutate the
-same items, claims, dispatch state, and recorded agent-session addresses.
+without making those separate systems. The agent skill operates through the CLI; the skill, CLI,
+and web console read and mutate the same items, claims, dispatch state, and recorded agent-session
+addresses. Use the skill as a conversational alternative to the web console for supported operations.
 
-You can switch between the CLI and web console while working on the same item. No export, import, or
+You can switch between the skill, CLI, and web console while working on the same item. No export, import, or
 synchronization step is required. Claim fencing still applies: changing surfaces does not silently
 grant the new surface ownership. Use the takeover, save, release, queue, and hand-back actions
 described below.
@@ -19,7 +20,7 @@ described below.
 > operating systems. It keeps the copyable command fallback everywhere. Where no web-only route
 > exists, the guide says so explicitly.
 
-For a task-by-task capability matrix covering the web console, GitHub, and CLI, use
+For a task-by-task capability matrix covering the skill, web console, GitHub, and CLI, use
 [Operator actions by surface](reference/operator-actions.md). That comparison links back to the
 authoritative procedures in this guide and the reference pages rather than repeating them.
 
@@ -27,14 +28,45 @@ authoritative procedures in this guide and the reference pages rather than repea
 
 | Goal | Start with | Switch to the other surface when |
 | --- | --- | --- |
-| Inspect and organize the backlog | `wrighty list`, `wrighty get`, or `wrighty web` | You want compact/JSON output, or a visual board and Markdown preview |
+| Inspect and organize the backlog | Ask the skill for a status overview, use `wrighty list`/`get`, or open the Local Markdown Board / GitHub Project | You want conversational follow-up, compact/JSON output, or visual planning |
+| Queue, send back, or resume eligible Local Markdown items | Ask the skill for an individual action or reviewed batch, or use the web Board | You prefer a conversation or visual selection; these Board executors do not support GitHub |
+| Inspect processing state and workers on either backend | Ask the skill what needs attention and which workers are running, or open web Operations | You want conversational triage or a visual operations view |
 | Collaboratively define a feature | Claude, Codex, Copilot, or OpenCode with the Wrighty skill | The item exists and you want visual editing or backlog placement |
-| Give one item to an unattended agent | `wrighty worker --once` | You want to monitor state, edit requirements, take over, or archive |
-| Process eligible work continuously | `wrighty worker` or **Start worker** in the web console | An item needs human attention or backlog eligibility needs editing |
+| Give one exact item to an unattended agent | Ask the skill to process that item, or use `wrighty worker --item ID`; `--once` instead chooses the next eligible item | You want to monitor state, edit requirements, take over, or archive |
+| Process eligible work continuously | Start `wrighty worker` yourself in a terminal, or use **Start worker** in the web console; the skill supplies instructions and can inspect/control existing runs | An item needs human attention or backlog eligibility needs editing |
+| Stop a worker on either backend | Ask the skill to drain or interrupt its run ID, or use the web worker controls | You want a conversational explanation or visual monitoring of the stop outcome |
 | Let an interactive agent choose work | Start Claude, Codex, Copilot, or OpenCode with the Wrighty skill | You want to inspect or take over the claimed item |
 | Clarify a paused agent item | `wrighty edit ID --takeover` or **Take over for editing** | You prefer terminal editing or the web console form |
 
 ## Inspect and organize work
+
+### Agent skill
+
+Ask for either planning status or processing state:
+
+```text
+$wrighty Show active items grouped by workflow status, including counts and IDs.
+$wrighty What is blocked, what is scheduled to retry, and which workers are running?
+```
+
+Both requests work with either backend. A GitHub overview reads the configured Project's statuses
+and tracked issues; it does not create a second planning board. GitHub Issues and Project views
+remain the place for visual GitHub planning. Web Operations and the skill provide processing-state
+inspection for both backends.
+
+For Local Markdown, the skill can also Queue, Send back, or Resume eligible items individually or
+in reviewed batches. For example, ask it to preview queueing selected IDs, inspect the proposed
+effects, then authorize that selection. These workflow executors do not support GitHub. The skill
+should explain that limit and the supported next step, without changing Project fields or
+recreating a batch through a loop of different mutations. Supported GitHub CLI creation and
+claim-aware editing remain available as separate workflows. See
+[skill capabilities and examples](reference/agent-skills.md#capabilities-by-backend).
+
+Worker inspection, pickup assessment, targeted or explicitly requested bounded launch, drain,
+and interrupt support both backends. Skill-launched runs stay attached and default to one item;
+you start continuous workers yourself in a terminal or web console. Worker visibility/control is
+local to the selected configuration, even for GitHub. Queueing never starts a worker by itself.
+See [worker ownership and stopping](reference/agent-skills.md#worker-ownership-and-stopping).
 
 ### CLI
 
@@ -73,8 +105,9 @@ with content-free diagnostics and the protected approve/reapprove action.
 
 ### Switching surfaces
 
-Read-only inspection never changes ownership. You can alternate freely between `list`/`get` and
-the web console. A web console refresh and the next CLI command both read the authoritative store.
+Read-only inspection never changes ownership. You can alternate freely between skill requests,
+`list`/`get`, and the web console. A web console refresh and the next skill/CLI query read the
+authoritative store.
 
 ## Collaboratively author a substantial work item
 

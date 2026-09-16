@@ -15,8 +15,10 @@ reason codes. An optional action name selects one descriptor; an unknown name re
 Wrighty's normal nonzero exit status and stderr JSON contract. Do not combine a selected name with
 `--all`.
 
-Discovery is read-only. Queue, Send back, and Resume report `execution: "supported"`; other
-catalogue entries remain `manual-only`. Listing an action never claims an item, starts a vendor
+Discovery is read-only. On Local Markdown, Queue, Send back, and Resume provide workflow
+executors; check each action's availability as well as its execution metadata. On GitHub those
+Board actions are unavailable with `NOT_SUPPORTED`. Other catalogue entries remain `manual-only`.
+Listing an action never claims an item, starts a vendor
 session, grants permission, or overrides a pending retry.
 
 ## Execute one workflow action
@@ -28,7 +30,7 @@ wrighty actions local:42 send-back --exec --yes --json
 wrighty actions local:42 resume --exec --yes --json
 ```
 
-These three executors support Local Markdown and share the web Board's policy and backend
+These three executors support Local Markdown only and share the web Board's policy and backend
 operation. `--exec` requires one action name and cannot use `--all`. An interactive invocation
 shows the consequence and prompts; redirected input and JSON require `--yes`. This authorizes
 only the named operation. Neither discovery nor `--yes` grants takeover or starts a worker.

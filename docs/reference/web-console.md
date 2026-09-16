@@ -45,6 +45,14 @@ GitHub never renders or authorizes those Local-only item mutation routes.
 The Local Markdown Operations tab complements the board with process and recovery state; it does
 not replace the board.
 
+Prefer to operate from an agent conversation? The [Wrighty skill](agent-skills.md) is an alternative
+for status summaries, processing-state inspection, and worker launch/control on both backends,
+plus individual and batch Board workflow actions on Local Markdown. GitHub planning remains in
+Issues and Project views. The skill's worker lifetime depends on its owning command or terminal;
+web-hosted workers remain owned by this web process. The skill launches only attached finite runs.
+For continuous processing it directs you to your terminal or **Start worker** here, then can
+inspect or stop the existing worker.
+
 ## Start, observe, and stop workers
 
 The header's **Workers** button opens an installation-local anchored popover, matching the

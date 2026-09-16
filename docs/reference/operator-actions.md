@@ -11,8 +11,10 @@ start an operation; **guidance** means it presents state or instructions whose a
 elsewhere; and **view** means read-only visibility. Follow the linked reference for prerequisites,
 commands, claim behavior, and edge cases.
 
-The three surfaces are:
+The surfaces are:
 
+- **Agent skill** — a conversational alternative for supported board and worker operations,
+  executed through the CLI. See the backend matrix below.
 - **Web console** — `wrighty web`, a shared machine-local web console for both backends; Local
   Markdown additionally supplies its board/editor.
 - **GitHub** — the issue, Project fields, labels, and Wrighty's single status comment.
@@ -20,6 +22,28 @@ The three surfaces are:
 
 For a live item-specific catalogue, use `wrighty actions ID` or `wrighty actions ID --all --json`.
 See [Action discovery](actions.md) for its read-only contract and stable refusal reasons.
+
+## Conversational alternative
+
+The skill offers the following workflows through natural-language requests. The detailed tables
+below compare the underlying web, GitHub, and CLI controls; they do not imply that every CLI
+operation has a dedicated skill workflow.
+
+| Goal through the skill | Local Markdown | GitHub |
+| --- | --- | --- |
+| Summarize planning status and inspect tracked items | Yes; complements the web Board | Yes; complements the native GitHub Project board |
+| Inspect processing state, blockers, and available actions | Yes; complements web Operations | Yes; complements web Operations |
+| Queue, Send back, or Resume via Board workflow execution | Individual items and reviewed batches | These executors are unavailable; explain the limit and use the appropriate planning/continuation workflow |
+| Discover workers and assess item pickup | Local configuration scope | Local configuration scope, not every host connected to GitHub |
+| Launch targeted or bounded work; drain or interrupt a run | Supported with authorization and a suitable process owner | Supported with authorization and a suitable process owner |
+| Start a continuous worker | The skill supplies instructions; the user starts it in a terminal or web console | Same boundary |
+
+See [Agent skills](agent-skills.md#example-requests) for prompts, backend limitations, and process
+lifetime. The skill uses the same CLI/Core policy checks; it does not recreate web requests or
+bypass a backend refusal. Its own launches default to attached single-item runs; `--max-items`
+requires an explicit bounded-queue request. General GitHub planning stays in Issues/Project views, while operations
+are shared across backends. Existing claim-aware CLI authoring/editing can also be used through
+the skill when separately requested.
 
 ## State and authority
 
@@ -40,8 +64,8 @@ Wrighty transition. Use the supported action linked below.
 
 | Action | Web console | GitHub | CLI | Authoritative procedure |
 | --- | --- | --- | --- | --- |
-| Browse and filter active work | **Direct:** visual status board | **Direct:** Project views and issue search | **Direct:** human or JSON listing | [Inspect and organize work](../workflows.md#inspect-and-organize-work) |
-| Inspect one item's content and metadata | **View:** rendered and raw Markdown, policy, operational status, and claim state | **View:** issue plus Project fields and labels | **Direct:** full operational detail | [Work items](work-items.md) |
+| Browse and filter active work | **Direct for Local Markdown:** visual status board; Operations shows processing state for both backends | **Direct:** Project views and issue search | **Direct:** human or JSON listing | [Inspect and organize work](../workflows.md#inspect-and-organize-work) |
+| Inspect one item's content and metadata | **View:** Local Markdown content/editor; processing state for both backends; GitHub context inspection is content-free | **View:** issue plus Project fields and labels | **Direct:** full operational detail | [Work items](work-items.md) |
 | Determine claim ownership or takeover eligibility | **View:** current ownership and available controls | **View:** claim projection/comment; exact recovery remains installation-aware | **Direct:** complete ownership inspection | [Claims and ownership](claims.md#claim-ownership-fencing-and-takeover) |
 | Inspect a retained session or workspace | **View:** local session address and bounded workspace state | **Guidance:** status comment identifies the recording host/branch according to privacy policy | **Direct:** session, resume, and workspace inventory | [Retained workspaces](worker.md#retained-workspaces) |
 | Find blocked, queued, retrying, or completed work | **View:** operational-status badges and callouts | **View:** authoritative lifecycle label plus display fields | **Direct:** grouped operational status | [Discovering what needs attention](worker.md#discovering-what-needs-attention-wrighty-status) |
@@ -51,10 +75,10 @@ Wrighty transition. Use the supported action linked below.
 | Action | Web console | GitHub | CLI | Authoritative procedure |
 | --- | --- | --- | --- | --- |
 | Create a work item | **Direct:** structured Local Markdown form | **Direct:** configured Project/issue form paths | **Direct:** retry-safe creation on either backend | [Collaboratively author a substantial work item](../workflows.md#collaboratively-author-a-substantial-work-item) |
-| Change title, instructions, status, or priority | **Direct:** requires a suitable editing claim | **Direct:** native issue/Project editing exists; Wrighty claim coordination still applies | **Direct:** claim-aware editing and moving | [Moving and editing](work-items.md#moving-and-editing) |
-| Allow or prevent automatic execution | **Direct:** execution-policy editor control | **Policy:** edit the authoritative Wrighty policy - execution field | **Direct:** create/edit policy options | [Create and dispatch one unattended item](../workflows.md#create-and-dispatch-one-unattended-item) |
-| Choose the agent policy | **Direct:** agent-policy editor control when the item is not locked to a retained retry | **Policy:** edit the authoritative Wrighty policy - agent field | **Direct:** create/edit policy options or worker-level override | [GitHub worker policy](configuration.md#initialize-the-github-backend) |
-| Inspect or approve execution context | Not applicable: Local content is approved by definition | **Direct:** native Project field or web repository control plane | **Direct:** `context` and `approve` | [Approve GitHub context and invalidate edits](../workflows.md#approve-github-context-and-invalidate-edits) |
+| Change title, instructions, status, or priority | **Direct for Local Markdown:** requires a suitable editing claim | **Direct:** native issue/Project editing exists; Wrighty claim coordination still applies | **Direct:** claim-aware editing and moving | [Moving and editing](work-items.md#moving-and-editing) |
+| Allow or prevent automatic execution | **Direct for Local Markdown:** execution-policy editor control | **Policy:** edit the authoritative Wrighty policy - execution field | **Direct:** create/edit policy options | [Create and dispatch one unattended item](../workflows.md#create-and-dispatch-one-unattended-item) |
+| Choose the agent policy | **Direct for Local Markdown:** agent-policy editor control when the item is not locked to a retained retry | **Policy:** edit the authoritative Wrighty policy - agent field | **Direct:** create/edit policy options or worker-level override | [GitHub worker policy](configuration.md#initialize-the-github-backend) |
+| Inspect or approve execution context | **Direct for GitHub:** protected inspect/approve controls; Local content is approved by definition | **Direct:** native Project field | **Direct:** `context` and `approve` | [Approve GitHub context and invalidate edits](../workflows.md#approve-github-context-and-invalidate-edits) |
 | Initialize or validate backend resources | **View:** explicit read-only GitHub target validation; no migration | **View:** resources created by initialization | **Direct:** discovery, initialization, and validation | [Configuration](configuration.md) |
 
 Changing policy does not itself launch a worker. A retained vendor-native retry also remains bound
@@ -69,7 +93,7 @@ to its recorded agent; see [usage exhaustion and deferred retry](worker.md#usage
 | Release a claim | **Direct:** own-claim and guarded override controls | No native fenced Wrighty action | **Direct** | [Recovery paths](claims.md#recovery-paths) |
 | Clarify a paused item and preserve its recorded session | **Direct:** edit with explicit queue, hand-back, release, or retain choices | **Direct:** issue content can be clarified; use Wrighty for the claim/session transition | **Direct:** atomic edit/takeover and continuation paths | [Clarify and resume the same session](../workflows.md#clarify-an-item-and-resume-the-same-agent-session) |
 | Queue a paused recorded session for a continuous worker | **Direct** | **Guidance:** status comment supplies the Wrighty path | **Direct** | [Clarify and resume the same session](../workflows.md#clarify-an-item-and-resume-the-same-agent-session) |
-| Queue, send back, or resume multiple eligible Board cards | **Direct for Local Markdown:** confirmed column actions process the frozen filtered set sequentially, up to 100 at a time | Not available | Repeat the corresponding single-item action | [Web console](web-console.md) |
+| Queue, send back, or resume multiple eligible Board cards | **Direct for Local Markdown:** confirmed column actions process the frozen filtered set sequentially, up to 100 at a time | Not available | **Direct for Local Markdown:** `batch preview`, `show`, and `execute` on a reviewed frozen selection | [Batch workflow actions](actions.md#batch-workflow-actions) |
 | Hand a claim back for interactive continuation | **Direct:** produces the fenced resume command and can open its CLI on macOS or native Windows | **Guidance:** status comment supplies the recording-installation path | **Direct:** produces or executes the resume command | [The two-path resume model](worker.md#the-two-path-resume-model) |
 
 ## Run and resume agents
@@ -118,8 +142,8 @@ Not every surface is meant to reach parity:
   Markdown-only, while validated launch of needs-attention and unclaimed Done sessions from
   Operations is shared.
   Its narrow GitHub context approve/reapprove action also lives in the repository control plane;
-  neither capability duplicates general GitHub issue/Project editing. Operations may host one
-  headless continuous worker for the lifetime of the web process. See
+  neither capability duplicates general GitHub issue/Project editing. Operations may host multiple
+  headless continuous workers for the lifetime of the web process. See
   [Web console](web-console.md).
 - GitHub provides policy, portable state, and human guidance. Exact session, retry, provider, and
   workspace operations execute through Wrighty on the recording installation. See

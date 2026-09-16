@@ -1,7 +1,116 @@
 # Agent skills
 
-The package contains a narrow `wrighty` Agent Skill shared by Codex, Claude Code, GitHub Copilot,
-and OpenCode:
+The bundled `wrighty` skill lets you manage work and workers from Codex, Claude Code, GitHub
+Copilot, or OpenCode. It is a conversational alternative to the web console for everyday board
+and processing operations, and can also help author or implement a work item in the current
+agent session. It operates through the Wrighty CLI against the same items and claims as the web
+console; switching surfaces requires no synchronization.
+
+## Capabilities by backend
+
+Workflow status describes where an item sits in planning. Operational state describes its
+processing: for example, an In Progress item may be working, awaiting clarification, or scheduled
+to retry. The skill keeps these views separate, just as the web console separates Board from
+Operations.
+
+| Ask the skill to… | Local Markdown | GitHub |
+| --- | --- | --- |
+| Summarize items by workflow status, including counts and IDs | Yes; a conversational view of the Local Markdown board | Yes; reads tracked issues and configured Project statuses. GitHub Project views remain the planning board |
+| Explain processing state, blockers, claims, and available actions | Yes | Yes; exact local session and workspace details require the recording installation |
+| Create, inspect, or implement a work item | Yes, through the existing claim-aware CLI workflows | Yes, through the existing claim-aware CLI workflows |
+| Queue, Send back, or Resume through the Board workflow executors | Yes, for eligible items | Not supported by these executors; use the appropriate GitHub planning or Wrighty continuation workflow |
+| Apply those workflow actions in a reviewed batch | Yes, on the exact frozen selection | Not supported; the skill should explain the limitation without applying a substitute mutation |
+| List workers and assess pickup for an item | Yes, within the local configuration scope | Yes, within the local configuration scope; this is not a list of workers on every GitHub-connected computer |
+| Start an exact-item, next-item, or bounded queue worker | Yes, when authorized and the host can own the process | Yes, subject to the same launch checks, including GitHub execution/context approval |
+| Start continuous processing | Instructions for the user to start it in a terminal or web console; the skill does not launch it | Same boundary |
+| Inspect, drain, or interrupt a registered worker | Yes, for verified local CLI or web-hosted runs | Yes, for verified local CLI or web-hosted runs |
+
+The web **Board** and general item editor exist only for Local Markdown. With GitHub, manage
+planning in Issues and Project views; web **Operations** remains available for worker and item
+processing state on both backends. An unsupported Board action does not mean the GitHub backend
+cannot process or continue work. Inspect the item's available actions and use the supported
+[GitHub workflow](../workflows.md#approve-github-context-and-invalidate-edits) or
+[targeted continuation](worker.md#the-two-path-resume-model). Generic status moves are not
+substitutes for Queue, Send back, or Resume semantics.
+
+## Example requests
+
+These examples use Codex's `$wrighty` invocation. Use the equivalent form for your
+[agent surface](#supported-skill-surfaces), and replace IDs with those returned for your tracker.
+
+```text
+$wrighty Show active work grouped by status, with counts and canonical item IDs.
+$wrighty What needs attention? Separate blocked items from scheduled retries.
+$wrighty Can an existing worker pick up this item? Explain the evidence; do not start one.
+
+# Local Markdown workflow actions
+$wrighty Queue local:12 for automatic processing. Do not start a worker.
+$wrighty Send local:19 back to the backlog.
+$wrighty Resume the recorded session for local:23 by queueing it for a worker.
+$wrighty Preview queueing the Todo items in area=api. Show exactly what would change first.
+
+# Worker operations on either backend
+$wrighty Process this exact item with the configured worker agent and a 30-minute item timeout.
+I authorize unattended processing of this item only. Keep the run attached and report the outcome.
+$wrighty Process at most three eligible items with a 30-minute item timeout and a five-minute
+idle timeout. Keep the run attached and report the results.
+$wrighty Show me how to start a continuous worker in my terminal.
+$wrighty Stop worker <run-id> after its current item; let that item finish.
+$wrighty Interrupt worker <run-id> now, including its active agent. Report any recovery needed.
+```
+
+The skill uses the configured workflow statuses and reports filters or incomplete counts.
+Queueing, resuming a recorded session for a worker, and starting a worker are separate effects.
+Requests that authorize an effect can proceed without repeated confirmation; a preview alone
+does not authorize execution. Batch results identify applied, skipped, failed, or uncertain items.
+With the worker-queue policy enabled, Queue authorizes automatic processing and Send back revokes
+that authorization. If the policy is disabled, execution permission remains a separate setting.
+See [workflow actions](actions.md) for eligibility and revalidation.
+
+Worker pickup is advisory: “could pick up” is not a reservation or a timing guarantee, and
+“unknown” is not permission to launch a duplicate. Worker inspection covers registrations in the
+current local configuration; remote, unregistered, and other-configuration workers can be outside
+that view. See [worker discovery and control](workers.md).
+
+## Worker ownership and stopping
+
+The skill launches only finite runs attached to their invoking command. It defaults to
+`worker --item ID` for an exact item or `worker --once` for the next eligible item. An explicitly
+requested bounded queue run may use `--max-items N`, with item and idle timeouts. That limits the
+number processed, not total elapsed time or the identities of the selected items: the worker
+selects eligible work as it proceeds. It is different from a frozen batch of workflow actions.
+
+**Start continuous workers yourself**, either in your terminal or with **Start worker** in the
+web console. The skill supplies instructions and states that it has not started the process;
+it does not launch a continuous worker even if the agent host offers a retained terminal. An
+idle timeout alone does not change this rule. It also does not repeat finite runs to simulate
+continuous processing. The skill can inspect, assess pickup from, drain, and interrupt workers
+you have already started.
+
+For allowed finite runs, if the agent surface cannot keep the command attached through
+completion, the skill supplies the command for you to run instead. This is a skill guidance
+boundary; the CLI continues to support continuous workers for terminals and the web host.
+
+A conversation does not guarantee background execution or monitoring after task cancellation,
+application exit, logout, or restart. There is no Wrighty detach command, service installation, or
+startup/restart management in this workflow. Worker-spawned implementation sessions cannot
+recursively start workers.
+
+**Drain** closes intake and lets the current item finish. **Interrupt** cancels the current agent
+process tree and performs interruption bookkeeping; it does not mark the item successfully
+completed. Both address a verified run ID, including individual web-hosted runs that share a
+process. The skill distinguishes an accepted stop request from completed shutdown, checks the
+item outcome, and does not fall back to killing an OS process. See [worker control](workers.md#cooperative-control).
+
+## Install and maintain the skill
+
+Run your agent in the configured project with access to the `wrighty` executable. For GitHub,
+the agent's command environment also needs network access and an authenticated `gh` CLI with
+the repository/Project permissions described in [configuration](configuration.md#initialize-the-github-backend).
+Installing a skill does not grant those permissions. If tracker access fails, the agent should
+report which observations are unavailable rather than invent counts or eligibility.
+
+Install for a selected agent, or all supported destinations:
 
 ```shell
 wrighty skill install --agent codex
@@ -180,19 +289,8 @@ incomplete, but the skill does not present them as ready or enable automatic pro
 same assessment passes. Fresh worker sessions independently assess the approved context they
 receive; the skill does not stamp items with a reusable “verified” marker.
 
-The bundled skill supports board overview using configured workflow order, operational triage,
-shared action discovery, and scoped worker/pickup assessment. `list --json` keeps its `result` array
-and adds `listing` metadata: status order, archive/filter/limit scope, returned count, and whether
-the result may be truncated. See [worker discovery](workers.md). Update an installed skill through
-the existing `wrighty skill update` command to receive these workflows.
-
-The bundled skill also executes individual Local Markdown Queue, Send back, and Resume requests
-through `actions <id> <name> --exec --yes --expected-version <stateVersion> --json`, after the
-requested effect is authorized. CLI and web share eligibility and locked revalidation. Execution
-returns the resulting state and refreshed worker pickup evidence; it does not launch a worker.
-See [action execution](actions.md).
-
-The skill also supports reviewed Local Markdown batches through `batch preview`, `batch show`,
-and `batch execute --yes`. It reports the exact frozen subset and partial results, including
-uncertain outcomes after interruption. CLI and web batch operations share the Core execution loop;
-the CLI persists its own previews/results for cross-process use. See [batch workflow actions](actions.md#batch-workflow-actions).
+The skill's Local Markdown workflow actions share eligibility and locked revalidation with the
+web Board. CLI and web batches share the Core execution loop; the CLI persists its own previews
+and results for use across invocations. Worker discovery and cooperative control also use the
+shared Core services. The skill describes these outcomes in conversation; it does not maintain a
+separate board or worker scheduler.
