@@ -5,13 +5,13 @@ description: Safely operate Wrighty through the `wrighty` CLI. Use only when the
 
 # Wrighty
 
-<!-- wrighty-skill-version: 0.18.0 -->
+<!-- wrighty-skill-version: 0.19.0 -->
 
 Operate Wrighty state only through the `wrighty` command. Never mutate tracked state by editing
 local Markdown, invoking `gh`, calling GitHub APIs/MCP, writing claim comments, or changing Project
 fields directly.
 
-For board overview, triage, individual Queue/Send back/Resume actions, worker discovery, and pickup prospects, read
+For board overview, triage, individual and batch Queue/Send back/Resume actions, worker discovery, and pickup prospects, read
 [references/board-and-workers.md](references/board-and-workers.md). Use `list --json` for workflow
 columns, `actions <id> --json` for the shared action catalogue, and `workers [--item <id>] --json`
 for scoped worker evidence. Discovery does not authorize mutations or worker launches.

@@ -2221,7 +2221,7 @@ public sealed partial class WrightyWebServerTests : IDisposable
         var result = await (await client.SendAsync(resultRequest)).Content.ReadAsStringAsync();
         Assert.Contains("Queue all warning", result);
         Assert.Contains("role=\"alert\"", result);
-        Assert.Contains("<strong>1 item could not be processed.</strong>", result);
+        Assert.Contains("<strong>1 item requires review.</strong>", result);
         Assert.Contains("1 completed successfully; 1 skipped", result);
         Assert.DoesNotContain("@if", result);
         Assert.Contains("No longer eligible for this action.", result);

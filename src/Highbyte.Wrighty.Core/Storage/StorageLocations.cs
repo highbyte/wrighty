@@ -64,6 +64,8 @@ public sealed record StorageLocationDescriptor(
 /// </summary>
 public sealed class StorageLocationCatalog(CachePaths cachePaths)
 {
+    public string WorkflowBatchesRoot => cachePaths.WorkflowBatchesRoot;
+
     private const string GitHubBackend = "github";
     private const string LocalMarkdownBackend = "local-markdown";
     private const string LocalMarkdownPathSource = "localMarkdown.path";
@@ -172,6 +174,14 @@ public sealed class StorageLocationCatalog(CachePaths cachePaths)
                 new("all", cachePaths.RootSource),
                 sensitive: false,
                 "Cross-process lock protecting provider-capacity updates."),
+            Directory(
+                "cache.workflow-batches",
+                "Workflow batch previews and results",
+                Full(cachePaths.WorkflowBatchesRoot),
+                StorageLifecycle.RuntimeState,
+                new("local-markdown", cachePaths.RootSource),
+                sensitive: true,
+                "Configuration-scoped previews and execution journals; deleting them loses replay and interruption evidence."),
             Directory(
                 "cache.worker-instances",
                 "Worker-instance registry",

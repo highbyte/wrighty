@@ -19,7 +19,7 @@
       <button type="submit" aria-label="Dismiss @action warning">×</button>
     </form>
   </header>
-  <p><strong>@Model.NotProcessedCount item@(Model.NotProcessedCount == 1 ? "" : "s") could not be processed.</strong>
+  <p><strong>@Model.NotProcessedCount item@(Model.NotProcessedCount == 1 ? "" : "s") require@(Model.NotProcessedCount == 1 ? "s" : "") review.</strong>
     @Model.SucceededCount completed successfully; @Model.SkippedCount skipped,
     @Model.FailedCount failed@(aborted).</p>
   @if (Model.AbortReason is not null)
@@ -29,7 +29,7 @@
   @if (Model.Items.Any(item => !item.Succeeded))
   {
     <details>
-      <summary>Review items not processed</summary>
+      <summary>Review affected items</summary>
       <ul>
         @foreach (var item in Model.Items.Where(item => !item.Succeeded).Take(100))
         {

@@ -214,6 +214,7 @@ public sealed partial class CliApplication(
         root.Subcommands.Add(BuildWorkersCommand());
         root.Subcommands.Add(BuildGetCommand());
         root.Subcommands.Add(BuildActionsCommand());
+        root.Subcommands.Add(BuildBatchCommand());
         root.Subcommands.Add(BuildContextCommand());
         root.Subcommands.Add(BuildApproveCommand());
         root.Subcommands.Add(BuildApprovalWorkflowCommand());

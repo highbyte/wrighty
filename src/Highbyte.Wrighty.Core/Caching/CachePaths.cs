@@ -32,6 +32,8 @@ public sealed class CachePaths
     public string ProviderCapacityLockPath =>
         Path.Combine(Root, "provider-capacity-v1.lock");
 
+    public string WorkflowBatchesRoot => Path.Combine(Root, "workflow-batches-v1");
+
     public string WorkerInstancesRoot =>
         Path.Combine(Root, "worker-instances-v1");
 

@@ -104,3 +104,67 @@ with `wrighty actions` before deciding what is currently available.
 
 See [worker lifecycle](worker.md), [claims and ownership](claims.md), and
 [operator actions by surface](operator-actions.md) for the underlying procedures.
+
+## Batch workflow actions
+
+```shell
+wrighty batch preview queue --status "Todo" --json
+wrighty batch preview queue --status "Todo" --field area=api --json
+wrighty batch preview send-back --id local:12 --id local:19 --json
+wrighty batch preview resume --status "In Progress" --json
+wrighty batch show <preview-id> --json
+wrighty batch execute <preview-id> --yes --json
+```
+
+Select explicit IDs (duplicates collapse to canonical IDs), or one configured workflow status
+with optional exact-match `--field` filters. Filters use the same AND semantics as `list`.
+These selections cannot be mixed. Only active, eligible Local Markdown items enter the frozen set.
+Previews sort canonical IDs ordinally and freeze the first 100 eligible items; JSON reports
+`selectedCount`, `eligibleCount`, the exact `candidates`, and `limited` so truncation is explicit.
+Each candidate includes its title, reviewed state fingerprint, before state, and authorization
+consequence. Previewing persists display data and hashes but does not mutate or claim an item.
+
+A preview expires five minutes after creation. Execute requires `--yes` in both human and JSON
+modes, authorizing only this preview's operation and candidates. It starts no worker. Execution
+rechecks configuration before starting and between candidates, then executes each item sequentially
+through the individual action service. New matches cannot join the set; changed content, claim,
+session, or eligibility produces a skipped item. The reviewed-state fingerprint is stricter than
+the web Board's fresh eligibility check, so an otherwise harmless content edit also requires a
+new CLI preview. The CLI and Board use the same Core batch loop for sequencing, conflict classification,
+cancellation, and partial results after a systemic failure. Limits, lifetime, action eligibility,
+and backend execution are also shared. Each interface retains its own preview storage and
+revalidation inputs.
+
+All three commands return `schemaVersion: 1` and `result` containing `preview`, `state` (`preview`
+or `completed`), `items`, `stopCode`, and `hasIssues`. Item outcomes are `applied`, `skipped`,
+`failed`, or `unprocessed`. Applied items include their single-action before/after result.
+A systemic failure stops remaining work; no successful mutation is rolled back. An ambiguous
+failure has `mutationMayHaveApplied: true` and must be inspected before any retry. Execution exits
+0 when all items applied, 6 for partial results, or 130 for cancellation; these outcomes retain
+stdout JSON. Validation failures use normal stderr errors. `show` exits 0 for a readable record.
+
+Preview and result journals are scoped by the absolute configuration path under
+`<cache/state-root>/workflow-batches-v1/<configuration-hash>/`. Separate invocations using that
+configuration and cache can share previews. An exclusive configuration-scoped file lock serializes
+execution and inspection; contention returns `STORE_BUSY`. Completed records are returned on
+repeat execution, even after preview expiry, without reapplying any item. Explicit `--yes` remains
+required. A preview contains no claim credentials and is not execution authority.
+
+Before each mutation, Wrighty writes an in-flight marker and flushes it to disk. If execution
+stops or the host restarts, the next `show`/`execute` marks an unfinished run interrupted: the
+in-flight item is failed with an uncertain outcome, and remaining items are unprocessed. Wrighty
+does not resume an interrupted batch automatically. Cancellation between items preserves definite
+outcomes; cancellation during a mutation is conservatively uncertain. If journal persistence or
+stdout fails, inspect the existing batch before attempting another mutation.
+
+The Board keeps previews/results in its web process and maps the shared executor's outcomes into
+its warning panel. An accepted web batch continues if the browser disconnects. Unexpected backend
+failures are retained as partial results and identify any item that may have been mutated, so a
+repeated submission returns the result instead of replaying the batch. Stopping the web process
+still loses its in-memory record; the CLI journal's restart recovery is specific to CLI batches.
+
+Records untouched for 24 hours are removed when creating another preview; each configuration holds
+at most 512 records. Cache deletion loses preview/result evidence and makes old IDs unavailable;
+it does not undo item mutations. Never restore, copy, or edit journals to retry work. For an expired
+or missing preview, inspect current items and obtain a newly reviewed selection. Follow up with
+`workers --item <id> --json` when pickup assessment is needed.
