@@ -39,7 +39,7 @@ public static class WorkflowBatchExecutor
                 break;
             }
             progress?.Starting(id);
-            var item = await ApplyAsync(id, execute, cancellationToken, onFailure);
+            var item = await ApplyAsync(id, execute, onFailure, cancellationToken);
             items.Add(item);
             progress?.Completed(item);
             if (item.Outcome != "failed") continue;
@@ -59,7 +59,7 @@ public static class WorkflowBatchExecutor
 
     private static async Task<WorkflowBatchItemResult> ApplyAsync(string id,
         Func<string, CancellationToken, Task<WorkflowActionResult?>> execute,
-        CancellationToken cancellationToken, Action<Exception>? onFailure)
+        Action<Exception>? onFailure, CancellationToken cancellationToken)
     {
         try
         {

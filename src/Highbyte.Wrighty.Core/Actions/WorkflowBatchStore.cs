@@ -15,6 +15,7 @@ public sealed class WorkflowBatchStore(string root, TimeProvider? timeProvider =
 {
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
     private const int MaximumEntries = 512;
+    private const string CompletedState = "completed";
     private static readonly TimeSpan Retention = TimeSpan.FromHours(24);
 
     public async Task<WorkflowBatchPreview> CreateAsync(TrackerConfig config, string action,
@@ -51,7 +52,7 @@ public sealed class WorkflowBatchStore(string root, TimeProvider? timeProvider =
         var path = RecordPath(config, id);
         await using var gate = await LocalStoreLock.AcquireAsync(Scope(config), cancellationToken);
         var record = Recover(path, Load(path));
-        if (record.State == "completed") return record;
+        if (record.State == CompletedState) return record;
         if (clock.GetUtcNow() >= record.Preview.ExpiresAt)
             throw Error("BATCH_EXPIRED", "The preview expired. Review a new batch.");
         if (record.Preview.ConfigurationVersion != WorkflowBatchPolicy.ConfigurationVersion(config))
@@ -64,7 +65,7 @@ public sealed class WorkflowBatchStore(string root, TimeProvider? timeProvider =
             record.Preview.Candidates.Select(candidate => candidate.Id).ToArray(),
             async (itemId, token) => await execute(record.Preview, candidates[itemId], token),
             cancellationToken, journal);
-        record = record with { State = "completed", Items = execution.Items, StopCode = execution.StopCode };
+        record = record with { State = CompletedState, Items = execution.Items, StopCode = execution.StopCode };
         Save(path, record);
         return record;
     }
@@ -78,15 +79,15 @@ public sealed class WorkflowBatchStore(string root, TimeProvider? timeProvider =
             Save(path, record);
         }
 
-        public void Completed(WorkflowBatchItemResult item)
+        public void Completed(WorkflowBatchItemResult result)
         {
-            record = record with { Items = [.. record.Items, item], ActiveItemId = null,
-                StopCode = item.Outcome == "failed" ? item.Code : null };
+            record = record with { Items = [.. record.Items, result], ActiveItemId = null,
+                StopCode = result.Outcome == "failed" ? result.Code : null };
             Save(path, record);
         }
     }
 
-    private WorkflowBatchRecord Recover(string path, WorkflowBatchRecord record)
+    private static WorkflowBatchRecord Recover(string path, WorkflowBatchRecord record)
     {
         if (record.State != "running") return record;
         if (record.ActiveItemId is { } id)
@@ -101,7 +102,7 @@ public sealed class WorkflowBatchStore(string root, TimeProvider? timeProvider =
     {
         var execution = WorkflowBatchExecutor.Complete(
             record.Preview.Candidates.Select(candidate => candidate.Id).ToArray(), record.Items, record.StopCode);
-        return record with { State = "completed", ActiveItemId = null, Items = execution.Items };
+        return record with { State = CompletedState, ActiveItemId = null, Items = execution.Items };
     }
 
     private void Purge(string scope)
@@ -137,7 +138,7 @@ public sealed class WorkflowBatchStore(string root, TimeProvider? timeProvider =
             if (new FileInfo(path).Length > 2 * 1024 * 1024) throw new JsonException();
             var record = JsonSerializer.Deserialize<WorkflowBatchRecord>(File.ReadAllText(path));
             if (record?.Preview?.Candidates is null || record.Items is null ||
-                record.State is not ("preview" or "running" or "completed") ||
+                record.State is not ("preview" or "running" or CompletedState) ||
                 record.Preview.Id != Path.GetFileNameWithoutExtension(path) ||
                 record.Preview.Candidates.Count > WorkflowBatchPolicy.MaximumCandidates ||
                 !ValidCandidates(record) ||
