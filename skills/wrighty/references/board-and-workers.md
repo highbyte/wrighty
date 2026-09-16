@@ -4,6 +4,9 @@ Use these workflows when the user asks to see their Wrighty board, triage blocke
 workers, or assess whether a worker could pick up a named item. These are observations, not
 permission to change items or launch processes.
 
+Present results in readable Markdown. Use a table for multiple items or status counts, and a
+concise summary for one item. Avoid raw JSON unless requested.
+
 ## Board by workflow status
 
 Run `wrighty list --json`. Its existing `result` array contains canonical IDs, workflow status,
@@ -133,8 +136,10 @@ is not evidence of open intake. Capability fields do not waive fresh identity ch
 Assessment describes the item's current state, not its state after a proposed Queue/Resume action.
 After an authorized mutation, re-read the item and assessment before describing pickup prospects.
 Queueing and launching are separate permissions. With no suitable observed worker, explain the
-reason and offer an appropriate bounded or continuous launch only if the user's intent calls for
-it. A next-item `worker --once` does not target a named item; `worker --item <id>` does.
+reason and offer an attached `--item` or `--once` run only if the user's intent calls for it;
+`--max-items N` requires an explicitly requested bounded queue run. For continuous processing,
+provide instructions for the user to start it in their terminal or web console; do not launch it
+yourself. A next-item `worker --once` does not target a named item; `worker --item <id>` does.
 
 Waiting must be bounded or explicitly hosted by the agent platform. Recheck only when asked to
 wait or when confirming an authorized operation, and stop on meaningful progress, failure, or a

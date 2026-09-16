@@ -13,8 +13,8 @@ first-run guide. These pages are the authority for options, guarantees, and edge
 - [Claims and ownership](claims.md) — claimant attribution, the ownership rules, fencing
   guarantees per backend, recovery paths, and escape hatches.
 - [Action discovery](actions.md) — current actions, blocked alternatives, stable names, and JSON.
-- [Operator actions by surface](operator-actions.md) — task-oriented comparison of what the Local
-  web console, GitHub, and CLI can view or perform, with links to the authoritative procedures.
+- [Operator actions by surface](operator-actions.md) — task-oriented comparison of the skill,
+  web console, GitHub, and CLI, with backend support and links to the authoritative procedures.
 - [Supported agents and surfaces](supported-agents.md) — which agent families Wrighty supports for
   skills, headless work, session resume, Desktop opening, and handoff.
 - [Autonomous worker mode](worker.md) — eligibility, workspace modes, needs-attention and
@@ -28,11 +28,13 @@ first-run guide. These pages are the authority for options, guarantees, and edge
   and opt-in cross-agent handoff.
 - [Web console](web-console.md) — shared configuration and operations for both
   backends, plus the Local Markdown board/editor.
-- [Agent skills](agent-skills.md) — installing and updating the bundled skill per agent surface.
+- [Agent skills](agent-skills.md) — conversational board and worker operations, backend support,
+  example requests, and installation/update instructions per agent surface.
 - [Storage and version control](storage.md) — what each backend stores where, and what to
   commit.
 
 Related: [workflow guide](../workflows.md), [item metadata](../item-metadata/README.md), and
 [design documents](../design/).
 
-- [Worker discovery](workers.md): scoped run inspection and item pickup assessment.
+- [Worker discovery and control](workers.md): scoped run inspection, item pickup assessment,
+  drain, and interrupt.

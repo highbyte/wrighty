@@ -17,7 +17,7 @@ You use Wrighty from a local directory on your machine that contains the project
 
 | Via | What it provides |
 | --- | --- |
-| **Interactively from within an AI agent.** | Use the Wrighty Skill to create, pick, and implement work items. |
+| **Interactively from within an AI agent.** | Use the Wrighty skill as a conversational alternative to the web console: summarize work, inspect processing state, manage Local Markdown workflow actions, and start or stop workers. You can also create, pick, and implement items. |
 | **Wrighty web console.** | Manage, sort, and filter the Local Markdown board; organize operational items and manage settings for both backends. |
 | **GitHub issues.** | Manage work items if using GitHub backend. |
 | **Wrighty worker.** | Automatically pick work items, execute them (headless) in a local AI agent, resume work after AI agent usage has expired, or hand off to another local AI agent. |
@@ -27,6 +27,13 @@ You use Wrighty from a local directory on your machine that contains the project
 > [!NOTE]
 > - All of Wrighty functionality (worker, web console, skill) is accessed or exposed via the Wrighty CLI app. 
 > - Access to work items is managed via claim tokens to avoid multiple consumers (human/agent/worker/ CLI) working on the same item.
+
+For **Local Markdown**, use the web Board or ask the skill to summarize columns and queue, send
+back, or resume eligible items, individually or in reviewed batches. For **GitHub**, plan work in
+GitHub Issues and Project views; the skill can summarize those items, but the Board workflow
+executors and batches are Local Markdown-only. Processing-state inspection and worker controls
+are available through the skill and web **Operations** for both backends. See
+[skill capabilities by backend](docs/reference/agent-skills.md#capabilities-by-backend).
 
 ## Where Wrighty has the most impact
 
@@ -231,12 +238,12 @@ flowchart LR
 
 ### Choose your next step
 
-- Follow [Wrighty workflows](docs/workflows.md) to switch safely between the CLI and web console.
+- Follow [Wrighty workflows](docs/workflows.md) to switch safely between the skill, CLI, and web console.
 - Configure a [continuous unattended worker](docs/reference/worker.md) to process a bounded queue.
 - Use the [GitHub backend](docs/reference/configuration.md#initialize-the-github-backend) when
   workers need to coordinate across computers.
-- Install and invoke the [agent skill](docs/reference/agent-skills.md) for supervised, interactive
-  work.
+- Install and invoke the [agent skill](docs/reference/agent-skills.md) to manage work and workers
+  conversationally, or implement an item in your current agent session.
 - Tune model and reasoning choices with [execution profiles](docs/reference/execution-profiles.md).
 
 ## Recover a blocked agent without starting over
@@ -311,7 +318,8 @@ failure classification, retry schedule, provider circuit, and per-vendor support
 
 ## Work with an agent interactively
 
-Install the bundled skill, then invoke it explicitly from your agent:
+Use the skill to operate Wrighty from your conversation as well as implement tasks. Install the
+bundled skill, then invoke it explicitly from your agent:
 
 ```shell
 wrighty skill install
@@ -326,6 +334,8 @@ local installation, or `--scope project` for a deliberate repository-scoped copy
 /wrighty Pick the next available item, implement it, run its tests, and finish it.
 
 # Codex CLI, Desktop, or IDE extension
+$wrighty Show my board by status, with counts and item IDs. What needs attention?
+$wrighty Which workers are running, and can an existing worker pick up this item?
 $wrighty Help me turn this feature idea into a well-scoped work item. Show me the proposed
 title and body before creating it.
 
@@ -335,7 +345,11 @@ title and body before creating it.
 
 If a Copilot surface has no skill command, name the Wrighty skill in the prompt. The skill directs
 agents to mutate tracker state only through the CLI and to branch on structured error codes. See
-[Agent skills](docs/reference/agent-skills.md) for per-surface activation and update mechanics.
+[Agent skills](docs/reference/agent-skills.md) for backend support, queueing and worker-control
+examples, and installation/update mechanics. Worker launch is separate from queueing. The skill
+defaults to attached single-item runs; explicitly requested `--max-items` runs are also supported.
+Start continuous workers yourself in a terminal or the web console; the skill provides
+instructions and can inspect or stop existing runs. It does not keep a worker alive in the background.
 
 ## Ownership in four rules
 
@@ -354,8 +368,8 @@ backend, and the lower-level escape hatches.
 | Topic | Reference |
 | --- | --- |
 | Complete behavior reference | [Wrighty reference index](docs/reference/README.md) |
-| Workflows end to end (CLI and web console) | [docs/workflows.md](docs/workflows.md) |
-| What each action supports in the web console, GitHub, and CLI | [Operator actions by surface](docs/reference/operator-actions.md) |
+| Workflows end to end (skill, CLI, and web console) | [docs/workflows.md](docs/workflows.md) |
+| What each action supports in the skill, web console, GitHub, and CLI | [Operator actions by surface](docs/reference/operator-actions.md) |
 | Backends, `wrighty init`, `.wrighty.json` | [Configuration](docs/reference/configuration.md) |
 | User-scoped settings (`wrighty config`, host label) | [User settings](docs/reference/user-settings.md) |
 | IDs, create, edit, move, archive, import | [Work items](docs/reference/work-items.md) |
@@ -365,7 +379,7 @@ backend, and the lower-level escape hatches.
 | Choosing a model and reasoning effort per run | [Execution profiles](docs/reference/execution-profiles.md) |
 | Quota exhaustion, deferred retry, agent handoff | [Usage recovery and agent handoff](docs/reference/usage-recovery-and-agent-handoff.md) |
 | The web console | [Web console](docs/reference/web-console.md) |
-| Skill installation per agent surface | [Agent skills](docs/reference/agent-skills.md) |
+| Conversational operations, backend support, and skill installation | [Agent skills](docs/reference/agent-skills.md) |
 | What is stored where, version control | [Storage and version control](docs/reference/storage.md) |
 | Physical item metadata per backend | [Item metadata](docs/item-metadata/README.md) |
 | Architecture and protocol rationale | [Design documents](docs/design/) |

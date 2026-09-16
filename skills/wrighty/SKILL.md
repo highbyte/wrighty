@@ -5,7 +5,7 @@ description: Safely operate Wrighty through the `wrighty` CLI. Use only when the
 
 # Wrighty
 
-<!-- wrighty-skill-version: 0.20.0 -->
+<!-- wrighty-skill-version: 0.21.0 -->
 
 Operate Wrighty state only through the `wrighty` command. Never mutate tracked state by editing
 local Markdown, invoking `gh`, calling GitHub APIs/MCP, writing claim comments, or changing Project
@@ -15,7 +15,10 @@ For board overview, triage, individual and batch Queue/Send back/Resume actions,
 [references/board-and-workers.md](references/board-and-workers.md). Use `list --json` for workflow
 columns, `actions <id> --json` for the shared action catalogue, and `workers [--item <id>] --json`
 for scoped worker evidence. Discovery does not authorize mutations or worker launches.
-For authorized foreground/terminal worker launch, exact-run inspection, drain, or interrupt, read
+Launch only attached finite worker runs: default to `--item <id>` or `--once`; use `--max-items N`
+only for an explicitly requested bounded queue run. Continuous workers must be started by the
+user in their terminal or through the web console; provide instructions, do not start one yourself.
+For authorized bounded worker launch, exact-run inspection, drain, or interrupt, read
 [references/worker-control.md](references/worker-control.md).
 
 ## Workflow
