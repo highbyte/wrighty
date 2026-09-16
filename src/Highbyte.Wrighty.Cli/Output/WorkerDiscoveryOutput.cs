@@ -4,6 +4,22 @@ namespace Highbyte.Wrighty.Cli.Output;
 
 public sealed partial class OutputWriter
 {
+    public async Task WriteWorkerControlAsync(string runId, WorkerStopMode mode,
+        WorkerStopRequestResult result, bool json)
+    {
+        if (json)
+        {
+            await WriteJsonAsync(new { schemaVersion = 1, result = new
+            {
+                runId, requestedMode = mode.ToString().ToLowerInvariant(),
+                result.Accepted, result.Code, result.Message, completed = false
+            } });
+            return;
+        }
+        await output.WriteLineAsync($"{runId}: {result.Message}");
+        await output.WriteLineAsync("Request accepted; completion is not yet verified. Inspect the run and its owning terminal.");
+    }
+
     public async Task WriteWorkersAsync(WorkerDiscovery discovery, bool json)
     {
         if (json)

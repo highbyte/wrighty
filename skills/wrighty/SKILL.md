@@ -1,11 +1,11 @@
 ---
 name: wrighty
-description: Safely operate Wrighty through the `wrighty` CLI. Use only when the user explicitly asks to use Wrighty, the Wrighty CLI, or a Wrighty work-item ID, including board overview, worker discovery, pickup assessment, Queue/Send back/Resume actions, and requests to list, inspect, create, pick, claim, edit, move, finish, archive, or release tracked work. Do not trigger for generic tasks, GitHub issues, planning, backlogs, or project management that do not explicitly identify Wrighty.
+description: Safely operate Wrighty through the `wrighty` CLI. Use only when the user explicitly asks to use Wrighty, the Wrighty CLI, or a Wrighty work-item ID, including board overview, worker discovery, launch/control, pickup assessment, Queue/Send back/Resume actions, and requests to list, inspect, create, pick, claim, edit, move, finish, archive, or release tracked work. Do not trigger for generic tasks, GitHub issues, planning, backlogs, or project management that do not explicitly identify Wrighty.
 ---
 
 # Wrighty
 
-<!-- wrighty-skill-version: 0.19.0 -->
+<!-- wrighty-skill-version: 0.20.0 -->
 
 Operate Wrighty state only through the `wrighty` command. Never mutate tracked state by editing
 local Markdown, invoking `gh`, calling GitHub APIs/MCP, writing claim comments, or changing Project
@@ -15,6 +15,8 @@ For board overview, triage, individual and batch Queue/Send back/Resume actions,
 [references/board-and-workers.md](references/board-and-workers.md). Use `list --json` for workflow
 columns, `actions <id> --json` for the shared action catalogue, and `workers [--item <id>] --json`
 for scoped worker evidence. Discovery does not authorize mutations or worker launches.
+For authorized foreground/terminal worker launch, exact-run inspection, drain, or interrupt, read
+[references/worker-control.md](references/worker-control.md).
 
 ## Workflow
 

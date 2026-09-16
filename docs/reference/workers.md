@@ -1,4 +1,4 @@
-# Worker discovery
+# Worker discovery and control
 
 `wrighty workers` lists registered worker runs in the current local configuration scope. Plain
 listing reads configuration and registry files and probes only registered PIDs and their start
@@ -8,6 +8,7 @@ up expired registry records.
 ```sh
 wrighty workers --json
 wrighty workers --item local:42 --json
+wrighty workers show <run-id> --json
 ```
 
 `--item` resolves the canonical item ID and adds advisory pickup assessment using tracker state
@@ -66,5 +67,30 @@ workers, failed registration, other users/configurations, and remote machines ca
 scope. An unreadable record makes coverage incomplete. Discovery does not broaden permissions or
 scan process command lines/environments. Cooperative stop still requires fresh verified identity.
 
-`workers` is read-only. For launching see [worker.md](worker.md); for item action discovery see
+`workers` without a control subcommand is read-only. `workers show <run-id>` selects one exact run; a missing run
+returns `WORKER_NOT_RUNNING` only with complete registry coverage, otherwise
+`WORKER_CONTROL_UNAVAILABLE`. A missing registration alone does not establish the item outcome.
+For launching see [worker.md](worker.md); for item action discovery see
 [actions.md](actions.md). OS service installation and startup management are operator-managed.
+
+## Cooperative control
+
+```sh
+wrighty workers drain <run-id> --yes --json
+wrighty workers interrupt <run-id> --yes --json
+```
+
+Both commands require explicit `--yes` and operate in the current configuration/cache scope.
+They use the same registry protocol polled by CLI and web-hosted workers. Drain closes intake and
+finishes the active item; interrupt stops its agent process tree and runs bounded finalization.
+The request revalidates the record's run/PID/start identity, host kind, configuration path scope,
+liveness, protocol version, and supported mode. No raw process kill is used. Several hosted runs
+can share a PID and remain independently controllable. Configuration changes do not prevent
+stopping a verified run of that same configuration path; its startup snapshot remains visible.
+
+Success returns `schemaVersion: 1`, with `result.runId`, `requestedMode`, `accepted`, `code`,
+`message`, and `completed: false`. This acknowledges persistence, not completed shutdown.
+Interrupt escalates drain; a later drain cannot downgrade it. Check the owning terminal's final
+output and the item state after exit. Refusals use the normal error envelope, including
+`WORKER_NOT_VERIFIED`, `WORKER_IDENTITY_CHANGED`, and `WORKER_CONTROL_UNSUPPORTED`.
+External restart/startup configuration is not changed by a cooperative stop.

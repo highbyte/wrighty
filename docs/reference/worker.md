@@ -52,6 +52,32 @@ override of the saved preference, but the named CLI must still be detected: it e
 operator intent without silently enabling that agent for later workers. Manage the allowlist from
 the web console's **Agents** menu; see [User settings](user-settings.md).
 
+## Process ownership and run receipts
+
+Workers run in the foreground. Keep bounded work attached to its invoking command; continuous
+work needs an identified owner, such as a retained terminal or the existing web-hosted worker
+supervisor. Model reasoning is not needed to keep the executable running. Terminal/session exit,
+app cancellation, logout, and restart may end it; Wrighty provides no detached process manager,
+service installation, startup registration, or automatic restart.
+
+The CLI emits a `worker-run-started` NDJSON receipt after host registration and before processing:
+`schemaVersion: 1`, `runId`, `registered`, `configurationPathHash`, `configurationRevision`,
+`scheduling`, `owner`, `statusCommand`, and `logs`. Scheduling contains the effective target,
+agent selection, profile, workspace, filters and limits. Owner identifies the foreground PID and
+lifetime. Logs are the invoking terminal's stdout/stderr, not a persisted CLI log file. Run the
+status command with the same configuration/cache context. A receipt is not an item success event.
+
+A registration failure reports `registered: false` and a null run ID while foreground execution
+continues; retain that command's output instead of launching a duplicate. A `--once` preflight with
+no work exits without starting a host or emitting a receipt. A normal host return emits
+`worker-run-completed` with run ID, summary, and reason (`finished`, `drained`, `OperatorStopNow`,
+or `HostShutdown`). Exceptions instead use the existing error path. Missing output or registration
+is not proof that work never started: inspect the item/session and the terminal before retrying.
+
+Use [worker discovery and control](workers.md) to inspect an exact run or request drain/interrupt.
+Worker-spawned assessment and implementation processes carry `WRIGHTY_WORKER_CHILD=1`; live worker
+launch from that context is refused with `WORKER_RECURSIVE_LAUNCH` to prevent recursive scheduling.
+
 ## Requirements-readiness assessment
 
 By default, every fresh worker session starts with a separate requirements-only turn under a

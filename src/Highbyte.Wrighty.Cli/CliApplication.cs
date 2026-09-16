@@ -1399,6 +1399,7 @@ public sealed partial class CliApplication(
             };
             ValidateWorkerInvocation(
                 checkOnly, item, requireResume, requireFresh, requireHandoff, options.Profile);
+            if (!options.DryRun) WorkerLaunchGuard.EnsureAllowed();
             if (checkOnly)
             {
                 await workerService.CheckAsync(options.Agent ?? config.EffectiveWorker.DefaultAgent,
@@ -1539,19 +1540,15 @@ public sealed partial class CliApplication(
             : string.Empty);
         using var control = new WorkerRunControl();
         var host = new WorkerRunHost(workerService!, workerInstances);
+        var identity = new WorkerRunIdentity(workingDirectory, configPath, revision,
+            WorkerInvocationSummary(options, selection.Item, selection.Intent), WorkerHostKind.CliProcess);
+        var runSelection = new WorkerRunSelection(
+            selection.Item is null ? null : tracker.ResolveId(config, selection.Item), selection.Intent, selection.ClaimToken);
         var summary = await host.RunAsync(
             config,
             options,
-            new WorkerRunIdentity(
-                workingDirectory,
-                configPath,
-                revision,
-                WorkerInvocationSummary(options, selection.Item, selection.Intent),
-                WorkerHostKind.CliProcess),
-            new WorkerRunSelection(
-                selection.Item is null ? null : tracker.ResolveId(config, selection.Item),
-                selection.Intent,
-                selection.ClaimToken),
+            identity,
+            runSelection,
             control,
             new WorkerRunCallbacks(
                 ordinaryOutput,
@@ -1559,8 +1556,11 @@ public sealed partial class CliApplication(
                 {
                     CliDiagnostics.WorkerRuntimeWarning(diagnostics, message);
                     return Task.CompletedTask;
-                }),
+                },
+                runId => WriteWorkerLaunchAsync(runId, identity,
+                    WorkerScheduling.From(config, options, identity, runSelection), options.Json)),
             cancellationToken);
+        await WriteWorkerCompletionAsync(control, summary, options.Json);
         cancellationToken.ThrowIfCancellationRequested();
         return summary;
     }

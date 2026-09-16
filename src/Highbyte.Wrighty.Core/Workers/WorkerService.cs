@@ -2955,10 +2955,11 @@ public sealed partial class WorkerService(
     private static Dictionary<string, string> BuildRunEnvironment(ClaimedRun run)
     {
         if (run.Assessment is not null)
-            return [];
+            return new() { [WorkerLaunchGuard.ChildEnvironmentVariable] = "1" };
 
         var environment = new Dictionary<string, string>
         {
+            [WorkerLaunchGuard.ChildEnvironmentVariable] = "1",
             ["WRIGHTY_CLAIMANT_ID"] = run.ClaimantId,
             ["WRIGHTY_CLAIM_TOKEN"] = run.Grant.ClaimToken!
         };

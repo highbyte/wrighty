@@ -112,6 +112,7 @@ public sealed partial class LocalDispatchStateTests : IDisposable
         Assert.Contains("5m elapsed", heartbeat.Message);
         Assert.Contains("timeout in 5m", heartbeat.Message);
         Assert.NotNull(runner.Environment);
+        Assert.Equal("1", runner.Environment[WorkerLaunchGuard.ChildEnvironmentVariable]);
         Assert.StartsWith("agent:worker:", runner.Environment!["WRIGHTY_CLAIMANT_ID"]);
         Assert.False(string.IsNullOrWhiteSpace(runner.Environment["WRIGHTY_CLAIM_TOKEN"]));
         Assert.Equal(
@@ -2877,7 +2878,8 @@ public sealed partial class LocalDispatchStateTests : IDisposable
 
         Assert.Equal(1, summary.NeedsAttention);
         Assert.Equal(2, runner.Invocations.Count);
-        Assert.Empty(runner.Environments[0]);
+        Assert.Equal("1", Assert.Single(runner.Environments[0]).Value);
+        Assert.True(runner.Environments[0].ContainsKey(WorkerLaunchGuard.ChildEnvironmentVariable));
         Assert.DoesNotContain("WRIGHTY_CLAIM_TOKEN", runner.Invocations[0].Environment.Keys);
         Assert.Contains("WRIGHTY_CLAIMANT_ID",
             runner.Invocations[0].EnvironmentVariablesToRemove!);
@@ -2941,7 +2943,8 @@ public sealed partial class LocalDispatchStateTests : IDisposable
 
         Assert.Equal(1, summary.NeedsAttention);
         Assert.Equal(1, runner.Calls);
-        Assert.Empty(runner.Environment!);
+        Assert.Equal("1", Assert.Single(runner.Environment!).Value);
+        Assert.True(runner.Environment!.ContainsKey(WorkerLaunchGuard.ChildEnvironmentVariable));
         Assert.Single(events,
             value => value.Type == "requirements-assessment-needs-clarification");
         Assert.DoesNotContain(events, value => value.Type == "started");
@@ -3003,7 +3006,8 @@ public sealed partial class LocalDispatchStateTests : IDisposable
 
         Assert.Equal(1, summary.NeedsAttention);
         Assert.Equal(1, runner.Calls);
-        Assert.Empty(runner.Environment!);
+        Assert.Equal("1", Assert.Single(runner.Environment!).Value);
+        Assert.True(runner.Environment!.ContainsKey(WorkerLaunchGuard.ChildEnvironmentVariable));
         Assert.Single(events, value => value.Type == expectedEvent);
         Assert.DoesNotContain(events, value => value.Type == "started");
     }

@@ -15,6 +15,22 @@ public sealed class WorkerInstanceRegistryTests : IDisposable
         $"wrighty-config-{Guid.NewGuid():N}",
         ".wrighty.json");
 
+    [Theory]
+    [InlineData("../outside")]
+    [InlineData("..\\outside")]
+    [InlineData("/outside")]
+    [InlineData("C:outside")]
+    [InlineData("")]
+    public async Task Control_rejects_run_ids_that_are_paths(string runId)
+    {
+        var registry = new JsonWorkerInstanceRegistry(new CachePaths(directory));
+        var result = await registry.RequestStopAsync(configPath,
+            new(runId, Environment.ProcessId, "start", WorkerHostKind.CliProcess),
+            WorkerStopMode.Drain, CancellationToken.None);
+        Assert.False(result.Accepted);
+        Assert.Equal("WORKER_IDENTITY_INVALID", result.Code);
+    }
+
     [Fact]
     public async Task Registration_is_listed_updated_and_removed_on_clean_exit()
     {

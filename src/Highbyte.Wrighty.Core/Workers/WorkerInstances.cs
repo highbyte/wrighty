@@ -378,6 +378,11 @@ public sealed class JsonWorkerInstanceRegistry(
         WorkerStopMode mode,
         CancellationToken cancellationToken)
     {
+        // Run IDs are file names, never paths supplied by a control caller.
+        if (string.IsNullOrWhiteSpace(target.RunId) || target.RunId is "." or ".." ||
+            target.RunId.IndexOfAny(['/', '\\', ':']) >= 0 ||
+            target.RunId.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            return StopRejected("WORKER_IDENTITY_INVALID", "The worker run ID is invalid.");
         var pathHash = ConfigurationPathHash(configurationPath);
         var recordPath = RecordPath(pathHash, target.RunId);
         WorkerInstance? instance;
