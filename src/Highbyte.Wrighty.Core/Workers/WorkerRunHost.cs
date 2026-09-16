@@ -25,7 +25,8 @@ public sealed record WorkerRunIdentity(
 
 public sealed record WorkerRunCallbacks(
     Func<WorkerEvent, Task> Emit,
-    Func<string, Task>? Warn);
+    Func<string, Task>? Warn,
+    Func<string, Task>? Registered = null);
 
 internal sealed record WorkerInstanceEventState(
     string? ItemId,
@@ -237,6 +238,7 @@ public sealed class WorkerRunHost(
         WorkerRunCallbacks callbacks,
         CancellationToken hostCancellationToken)
     {
+        WorkerLaunchGuard.EnsureAllowed();
         var registration = await RegisterAsync(
             identity.ConfigurationPath,
             identity.ConfigurationRevision,
@@ -276,6 +278,8 @@ public sealed class WorkerRunHost(
             pollingStop.Token);
         try
         {
+            if (callbacks.Registered is not null)
+                await callbacks.Registered(registration.RunId);
             Func<WorkerEvent, Task> projected = value => ProjectEventAsync(
                 value,
                 registration,

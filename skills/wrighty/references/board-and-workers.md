@@ -141,3 +141,5 @@ wait or when confirming an authorized operation, and stop on meaningful progress
 needed user decision. A conversation is not a guarantee of unattended monitoring. Worker-spawned
 implementation sessions must not recursively launch workers. Never run a paid provider probe
 merely to strengthen an assessment.
+
+For authorized launches and cooperative control, read [worker-control.md](worker-control.md).
