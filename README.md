@@ -75,6 +75,31 @@ queue, policy, claim, and recovery state used by local workers on each computer:
 
 <a href="docs/assets/screenshots/github-board.png"><img src="docs/assets/screenshots/github-board.png" width="31%" align="top" alt="GitHub Project board with Wrighty queue, policy, claim, and recovery fields"></a>
 
+With the Wrighty skill, ask for the same overview in conversation. This exchange was captured
+from Codex using a Local Markdown test tracker; wording and layout can vary by agent.
+
+**You:**
+
+> $wrighty Show my active board grouped by workflow status. Include the total count in each column and the canonical item IDs. Also tell me whether any workers are running. This is an overview only.
+
+**Agent:**
+
+> Your active board has **3 items**, excluding archived items.
+>
+> | Workflow status | Total | Items |
+> |---|---:|---|
+> | Todo | 2 | `local:1` — Alpha API<br>`local:2` — Beta UI |
+> | Worker queue | 1 | `local:3` — Gamma tests |
+> | In Progress | 0 | — |
+> | Done | 0 | — |
+>
+> **Workers:** No registered workers were found in this board’s local configuration. Remote or unregistered workers are outside this check’s scope.
+>
+> No changes were made.
+
+See [more captured skill responses](docs/reference/agent-skills.md#example-responses) for workflow
+actions and GitHub backend limitations.
+
 See [Wrighty workflows](docs/workflows.md) for the actions behind these views and the
 [Web console](docs/reference/web-console.md) for the backend-specific web surfaces.
 
