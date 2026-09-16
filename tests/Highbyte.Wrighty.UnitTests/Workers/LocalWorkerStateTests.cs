@@ -4751,7 +4751,7 @@ public sealed partial class LocalDispatchStateTests : IDisposable
     private sealed class NeedsClarificationRunner : IAgentProcessRunner
     {
         public int Calls { get; private set; }
-        public IReadOnlyDictionary<string, string>? Environment { get; private set; }
+        public Dictionary<string, string>? Environment { get; private set; }
 
         public async Task<AgentRunResult> RunAsync(
             AgentInvocation invocation,
@@ -4786,7 +4786,7 @@ public sealed partial class LocalDispatchStateTests : IDisposable
     private sealed class InvalidAssessmentRunner(bool timesOut) : IAgentProcessRunner
     {
         public int Calls { get; private set; }
-        public IReadOnlyDictionary<string, string>? Environment { get; private set; }
+        public Dictionary<string, string>? Environment { get; private set; }
 
         public async Task<AgentRunResult> RunAsync(
             AgentInvocation invocation,
