@@ -191,3 +191,8 @@ through `actions <id> <name> --exec --yes --expected-version <stateVersion> --js
 requested effect is authorized. CLI and web share eligibility and locked revalidation. Execution
 returns the resulting state and refreshed worker pickup evidence; it does not launch a worker.
 See [action execution](actions.md).
+
+The skill also supports reviewed Local Markdown batches through `batch preview`, `batch show`,
+and `batch execute --yes`. It reports the exact frozen subset and partial results, including
+uncertain outcomes after interruption. CLI and web batch operations share the Core execution loop;
+the CLI persists its own previews/results for cross-process use. See [batch workflow actions](actions.md#batch-workflow-actions).

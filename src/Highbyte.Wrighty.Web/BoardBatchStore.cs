@@ -31,7 +31,8 @@ public sealed record BoardBatchItemResult(
     bool Succeeded,
     bool Skipped,
     string? Reason = null,
-    bool Aborted = false);
+    bool Aborted = false,
+    bool MutationMayHaveApplied = false);
 
 public sealed record BoardBatchResult(
     string IntentId,
@@ -63,9 +64,9 @@ public sealed class BoardBatchStore(
     TimeSpan? intentLifetime = null,
     int maximumEntries = 512)
 {
-    public const int MaximumCandidates = 100;
+    public const int MaximumCandidates = Actions.WorkflowBatchPolicy.MaximumCandidates;
     private readonly TimeProvider clock = timeProvider ?? TimeProvider.System;
-    private readonly TimeSpan lifetime = intentLifetime ?? TimeSpan.FromMinutes(5);
+    private readonly TimeSpan lifetime = intentLifetime ?? Actions.WorkflowBatchPolicy.PreviewLifetime;
     private readonly ConcurrentDictionary<string, Entry> entries = new(StringComparer.Ordinal);
     private readonly object latestLock = new();
     private BoardBatchResult? latestResult;

@@ -65,6 +65,40 @@ but worker assessment failed: inspect again without replaying the mutation. If a
 without a definitive outcome, re-read the item before any retry. Other catalogue entries remain
 manual-only; use their documented focused procedure only within the user's authorization.
 
+## Batch workflow actions
+
+For a requested Local Markdown batch, freeze the selection before authorizing execution:
+
+```shell
+wrighty batch preview queue --status "Todo" --json
+wrighty batch preview send-back --id local:12 --id local:19 --json
+wrighty batch show <preview-id> --json
+wrighty batch execute <preview-id> --yes --json
+```
+
+Use configured statuses, or explicit IDs from the user's selection. A status selection can include
+`--field name=value` filters with the same exact-match AND semantics as `list`. Use `resume` for
+retained sessions. Review `result.preview.candidates`, each item's `consequence`, `selectedCount`,
+`eligibleCount`, `limited`, and `expiresAt`. At most 100 eligible items are frozen for five minutes.
+If limited, explain which exact subset will run; never silently process subsequent batches.
+
+Pass `--yes` only when the user's authorization covers the frozen items and their consequences.
+If that effect is already authorized, proceed without another confirmation. Execution starts no
+worker and never claims newly eligible items outside the frozen selection. Each candidate's
+reviewed state is revalidated under the same mutation lock as individual actions.
+
+Read stdout JSON even on exit 6 (partial result) or 130 (cancellation). Report `result.items` as
+applied, skipped, failed, or unprocessed; explain `code` and `mutationMayHaveApplied`. A systemic
+failure stops the rest without rolling back applied items. Repeating execute returns the stored
+result; it does not retry skipped, failed, or unprocessed items. After a process interruption,
+`batch show` recovers the journal and flags an in-flight item as uncertain. Inspect that item's
+current state before proposing a new preview. Do not recreate and replay the whole batch blindly.
+
+A missing/expired preview requires a fresh review. Previews/results belong to the same local
+configuration and cache directory across processes and restarts; do not copy or edit the files,
+or treat a preview ID as authority to execute. Use `workers --item <id> --json` for pickup evidence
+after a successful action when the user's request needs it.
+
 ## Workers and pickup prospects
 
 Run `wrighty workers --json` for worker discovery alone. It reads the configuration-scoped local

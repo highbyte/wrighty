@@ -3633,92 +3633,19 @@ public sealed class IndexModel(
         return new NoContentResult();
     }
 
-    private async Task<BoardBatchResult> ExecuteBoardBatchAsync(BoardBatchIntent intent)
-    {
-        List<BoardBatchItemResult> results = [];
-        string? abortReason = null;
-        foreach (var candidate in intent.Candidates)
+    private Task<BoardBatchResult> ExecuteBoardBatchAsync(BoardBatchIntent intent) =>
+        BoardBatchExecution.ExecuteAsync(intent, async (candidate, token) =>
         {
-            try
-            {
-                if (!string.Equals(
-                        intent.ConfigurationRevision,
-                        state.ActiveConfigurationRevision ?? string.Empty,
-                        StringComparison.Ordinal))
-                {
-                    throw new TrackerException(
-                        "BOARD_BATCH_CONFIG_CHANGED",
-                        "Wrighty's configuration changed while the batch was running.",
-                        6);
-                }
-                if (!await BoardBatchCandidateStillEligibleAsync(
-                        candidate.Id,
-                        intent.Action,
-                        CancellationToken.None))
-                {
-                    results.Add(new BoardBatchItemResult(
-                        candidate.Id,
-                        candidate.DisplayId,
-                        Succeeded: false,
-                        Skipped: true,
-                        "No longer eligible for this action."));
-                    continue;
-                }
-
-                await ExecuteBoardBatchItemAsync(
-                    candidate.Id,
-                    intent.Action,
-                    CancellationToken.None);
-                results.Add(new BoardBatchItemResult(
-                    candidate.Id,
-                    candidate.DisplayId,
-                    Succeeded: true,
-                    Skipped: false));
-            }
-            catch (TrackerException exception) when (IsBoardBatchItemConflict(exception))
-            {
-                results.Add(new BoardBatchItemResult(
-                    candidate.Id,
-                    candidate.DisplayId,
-                    Succeeded: false,
-                    Skipped: true,
-                    "The item changed before Wrighty could apply the action."));
-            }
-            catch (TrackerException exception)
-            {
-                WebDiagnostics.RetainFailure(HttpContext, exception.Code, exception);
-                results.Add(new BoardBatchItemResult(
-                    candidate.Id,
-                    candidate.DisplayId,
-                    Succeeded: false,
-                    Skipped: false,
-                    $"Wrighty could not complete this item ({exception.Code})."));
-                abortReason = $"The batch stopped because Wrighty could not continue safely ({exception.Code}).";
-                break;
-            }
-        }
-
-        if (abortReason is not null)
-        {
-            var completedIds = results.Select(result => result.Id).ToHashSet(StringComparer.Ordinal);
-            results.AddRange(intent.Candidates
-                .Where(candidate => !completedIds.Contains(candidate.Id))
-                .Select(candidate => new BoardBatchItemResult(
-                    candidate.Id,
-                    candidate.DisplayId,
-                    Succeeded: false,
-                    Skipped: false,
-                    "Not processed because the batch stopped.",
-                    Aborted: true)));
-        }
-
-        return new BoardBatchResult(
-            intent.Id,
-            intent.Action,
-            DateTimeOffset.UtcNow,
-            results,
-            abortReason);
-    }
+            if (!string.Equals(intent.ConfigurationRevision,
+                    state.ActiveConfigurationRevision ?? string.Empty, StringComparison.Ordinal))
+                throw new TrackerException("BATCH_CONFIG_CHANGED",
+                    "Wrighty's configuration changed while the batch was running.", 6);
+            if (!await BoardBatchCandidateStillEligibleAsync(candidate.Id, intent.Action, token))
+                throw new TrackerException("BATCH_ITEM_INELIGIBLE", "No longer eligible for this action.", 6);
+            await ExecuteBoardBatchItemAsync(candidate.Id, intent.Action, token);
+            return null;
+        }, exception => WebDiagnostics.RetainFailure(HttpContext,
+            exception is TrackerException trackerError ? trackerError.Code : "BATCH_EXECUTION_FAILED", exception));
 
     private async Task<bool> BoardBatchCandidateStillEligibleAsync(
         string id,
@@ -3753,13 +3680,6 @@ public sealed class IndexModel(
             BoardBatchAction.Dequeue => DequeueItemAsync(id, cancellationToken),
             _ => ResumeSessionAsync(id, cancellationToken)
         };
-
-    private static bool IsBoardBatchItemConflict(TrackerException exception) =>
-        exception.Code is "WORK_ITEM_NOT_FOUND" or "WORK_ITEM_ARCHIVED" or
-            "CLAIM_NOT_OWNER" or "WORKER_ITEM_INELIGIBLE" or "ACTION_STATE_CHANGED" or
-            "WORKFLOW_STATE_INVALID" or "WORKER_RECOVERY_PENDING" or "ITEM_ARCHIVED" or
-            "RESUME_ADDRESS_NOT_LOCAL" ||
-        Status(exception) == StatusCodes.Status409Conflict;
 
     /// <summary>
     /// Moves a retained session's dispatch state to needs-attention. The item stays where it is
