@@ -12,8 +12,9 @@ on:
           - credential-preflight
           - prepare-release
           - verify-published
+          - verify-installation
       tag:
-        description: Existing empty draft release tag (required for prepare-release)
+        description: Draft tag for prepare-release, or published tag for verification
         required: false
         type: string
       publication:
@@ -28,13 +29,13 @@ on:
     types: [published]
 
 concurrency:
-  group: release-${{ inputs.tag || github.event.release.tag_name || 'credential-preflight' }}
+  group: ${{ inputs.operation == 'verify-installation' && 'installation' || 'release' }}-${{ inputs.tag || github.event.release.tag_name || 'credential-preflight' }}
   cancel-in-progress: false
 
 jobs:
   preflight-release-app:
     name: Verify release App
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && inputs.operation != 'verify-installation'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     environment: release
@@ -802,10 +803,59 @@ jobs:
             )
           done
 
+  installation-target:
+    name: Resolve existing release for installation checks
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == 'verify-installation'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      source-sha: ${{ steps.target.outputs.source-sha }}
+      version: ${{ steps.target.outputs.version }}
+    steps:
+      - name: Resolve and verify published release
+        id: target
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+
+          tag = os.environ["TAG"]
+          numeric = r"(?:0|[1-9][0-9]*)"
+          identifier = rf"(?:{numeric}|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+          pattern = rf"v{numeric}\.{numeric}\.{numeric}(?:-{identifier}(?:\.{identifier})*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+          if not re.fullmatch(pattern, tag):
+              raise SystemExit("Installation verification requires an existing v<SemVer> tag.")
+          release = json.loads(subprocess.check_output(
+              ["gh", "release", "view", tag, "--json", "isDraft,isImmutable,tagName"], text=True))
+          if release["isDraft"] or not release["isImmutable"] or release["tagName"] != tag:
+              raise SystemExit("Installation verification requires a published immutable release.")
+          subprocess.run(["gh", "release", "verify", tag], check=True)
+          sha = subprocess.check_output(
+              ["gh", "api", f"repos/{os.environ['GH_REPO']}/commits/{tag}", "--jq", ".sha"],
+              text=True).strip()
+          if not re.fullmatch(r"[0-9a-f]{40}", sha):
+              raise SystemExit("Could not resolve the release source commit.")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"source-sha={sha}\nversion={tag[1:]}\n")
+          print(f"Verify installed {tag} from {sha}; installation code comes from the dispatched workflow ref.")
+          PY
+
   smoke-homebrew-installation:
     name: Smoke Homebrew on ${{ matrix.os }}
-    if: ${{ !cancelled() && needs.update-package-managers.result == 'success' }}
-    needs: [published-release, update-package-managers]
+    if: >-
+      !cancelled() &&
+      (needs.update-package-managers.result == 'success' || needs.installation-target.result == 'success')
+    needs: [published-release, update-package-managers, installation-target]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     permissions:
@@ -819,12 +869,15 @@ jobs:
       - name: Check out smoke test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.published-release.outputs.source-sha }}
+          ref: ${{ inputs.operation == 'verify-installation' && github.sha || needs.published-release.outputs.source-sha }}
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.x"
+
+      - name: Verify installation failure handling
+        run: python -m unittest discover -s tests/ReleaseSmokeTests -p test_install_release_package.py
 
       - name: Prepare Homebrew
         shell: bash
@@ -839,20 +892,37 @@ jobs:
 
           brew --version
 
+      - name: Tap Highbyte formulas
+        shell: bash
+        run: brew tap highbyte/tap
+
       - name: Install Wrighty from Homebrew
         shell: bash
+        env:
+          SOURCE_SHA: ${{ needs.installation-target.outputs.source-sha || needs.published-release.outputs.source-sha }}
+          VERSION: ${{ needs.installation-target.outputs.version || needs.published-release.outputs.version }}
         run: |
           set -euo pipefail
+          python3 scripts/install-release-package.py \
+            --manager homebrew \
+            --version "$VERSION" \
+            --source-sha "$SOURCE_SHA" \
+            --log-directory "$RUNNER_TEMP/package-install-logs"
 
-          brew tap highbyte/tap
-          brew install highbyte/tap/wrighty
-          command -v wrighty
+      - name: Retain installation diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-install-${{ matrix.os }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/package-install-logs
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Smoke installed Wrighty
         shell: bash
         env:
-          SOURCE_SHA: ${{ needs.published-release.outputs.source-sha }}
-          VERSION: ${{ needs.published-release.outputs.version }}
+          SOURCE_SHA: ${{ needs.installation-target.outputs.source-sha || needs.published-release.outputs.source-sha }}
+          VERSION: ${{ needs.installation-target.outputs.version || needs.published-release.outputs.version }}
         run: |
           python3 scripts/smoke-release-cli.py \
             --cli "$(command -v wrighty)" \
@@ -874,8 +944,10 @@ jobs:
 
   smoke-scoop-installation:
     name: Smoke Scoop on Windows
-    if: ${{ !cancelled() && needs.update-package-managers.result == 'success' }}
-    needs: [published-release, update-package-managers]
+    if: >-
+      !cancelled() &&
+      (needs.update-package-managers.result == 'success' || needs.installation-target.result == 'success')
+    needs: [published-release, update-package-managers, installation-target]
     runs-on: windows-latest
     timeout-minutes: 15
     permissions:
@@ -885,12 +957,15 @@ jobs:
       - name: Check out smoke test
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.published-release.outputs.source-sha }}
+          ref: ${{ inputs.operation == 'verify-installation' && github.sha || needs.published-release.outputs.source-sha }}
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.x"
+
+      - name: Verify installation failure handling
+        run: python -m unittest discover -s tests/ReleaseSmokeTests -p test_install_release_package.py
 
       - name: Install Scoop
         id: scoop
@@ -932,15 +1007,22 @@ jobs:
           SCOOP: ${{ steps.scoop.outputs.root }}
           SCOOP_CMD: ${{ steps.scoop.outputs.scoop }}
           SCOOP_ROOT: ${{ steps.scoop.outputs.root }}
+          SOURCE_SHA: ${{ needs.installation-target.outputs.source-sha || needs.published-release.outputs.source-sha }}
+          VERSION: ${{ needs.installation-target.outputs.version || needs.published-release.outputs.version }}
         run: |
           & $env:SCOOP_CMD bucket add highbyte https://github.com/highbyte/scoop-bucket
           if ($LASTEXITCODE -ne 0) {
             throw "Could not add the Highbyte Scoop bucket."
           }
 
-          & $env:SCOOP_CMD install highbyte/wrighty
+          python scripts/install-release-package.py `
+            --manager scoop `
+            --scoop-root $env:SCOOP_ROOT `
+            --version $env:VERSION `
+            --source-sha $env:SOURCE_SHA `
+            --log-directory (Join-Path $env:RUNNER_TEMP 'package-install-logs')
           if ($LASTEXITCODE -ne 0) {
-            throw "Could not install Wrighty from Scoop."
+            throw "Could not install and verify Wrighty from Scoop. See installation diagnostics."
           }
 
           $cli = Join-Path $env:SCOOP_ROOT 'shims\wrighty.exe'
@@ -949,12 +1031,21 @@ jobs:
           }
           "cli=$cli" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
+      - name: Retain installation diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: scoop-install-windows-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/package-install-logs
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Smoke installed Wrighty
         shell: pwsh
         env:
           CLI: ${{ steps.wrighty.outputs.cli }}
-          SOURCE_SHA: ${{ needs.published-release.outputs.source-sha }}
-          VERSION: ${{ needs.published-release.outputs.version }}
+          SOURCE_SHA: ${{ needs.installation-target.outputs.source-sha || needs.published-release.outputs.source-sha }}
+          VERSION: ${{ needs.installation-target.outputs.version || needs.published-release.outputs.version }}
         run: |
           python scripts/smoke-release-cli.py `
             --cli $env:CLI `
