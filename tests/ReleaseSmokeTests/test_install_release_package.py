@@ -14,7 +14,8 @@ from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "install-release-package.py"
 SPEC = importlib.util.spec_from_file_location("install_release_package", SCRIPT)
-assert SPEC is not None and SPEC.loader is not None
+if SPEC is None or SPEC.loader is None:
+    raise RuntimeError(f"Could not load {SCRIPT}")
 INSTALL = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(INSTALL)
 
@@ -121,9 +122,9 @@ class PackageInstallTests(unittest.TestCase):
                 self.cli.unlink(missing_ok=True)
                 if self.package.exists():
                     self.package.rmdir()
-                def execute(command):
+                def execute(command, reported_version=version):
                     self.complete_files()
-                    return self.result(1, "Broken pipe") if command == self.command else self.result(0, version)
+                    return self.result(1, "Broken pipe") if command == self.command else self.result(0, reported_version)
                 with patch.object(INSTALL, "run", side_effect=execute):
                     with self.assertRaisesRegex(RuntimeError, "failed version verification"):
                         self.install()
