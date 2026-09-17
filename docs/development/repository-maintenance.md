@@ -232,6 +232,44 @@ Immediate publication makes the completed draft immutable, verifies the release 
 updates the Homebrew tap and Scoop bucket with the App token, installs the packages on their
 supported runners, repeats the Local Markdown smoke test, and uninstalls the package.
 
+The Homebrew and Scoop Wrighty installation steps allow at most three attempts, waiting 10 and
+30 seconds after recognized transient failures such as broken pipes, connection resets, DNS
+failures, timeouts, or HTTP 502/503/504 responses. Unknown errors, authentication/permission
+denials, and integrity failures stop immediately. These retries cover the Wrighty package install;
+package-manager bootstrap, tap/bucket setup, release downloads, publication, and repository pushes
+are not retried by this helper.
+
+Each installation check requires a clean disposable runner. Before retrying, it inspects the
+package directory and executable. If installation completed despite a transient command failure,
+the exact CLI version and source commit must match before proceeding to the separate functional
+smoke test. Partial installations or version mismatches stop instead of being repaired or retried.
+The job timeout still applies, and the existing cleanup step runs on failure as well as success.
+
+The Actions job summary records attempts and recovery, and seven-day `homebrew-install-*` or
+`scoop-install-*` artifacts retain each attempt's exit code and output. Homebrew installation uses
+verbose output; the helper does not dump the environment. Automatic retries never bypass checksum,
+attestation, version, or functional checks. A terminal workflow failure still requires maintainer
+approval before a manual rerun.
+
+To verify installation workflow changes without publishing another release, dispatch the existing
+Release workflow with `operation=verify-installation`, selecting the branch that contains the
+changes and the published tag currently served by the Homebrew tap and Scoop bucket:
+
+```shell
+gh workflow run release.yml --repo highbyte/wrighty --ref YOUR_BRANCH \
+  -f operation=verify-installation -f tag=v0.19.0-alpha -f publication=draft
+```
+
+This operation uses only read access to Wrighty's repository and does not access the release App
+or modify releases, tags, the tap, or the bucket. It verifies the existing immutable release and
+resolves its source commit, then runs the shared Homebrew and Scoop installation jobs using the
+helper and tests from the dispatched workflow commit. The `publication` input is ignored for this
+operation. Installation failure-handling tests, real package installs, exact version/commit checks,
+Local Markdown smoke tests, and cleanup run on Linux, macOS, and Windows. Selecting a release
+different from the version currently served by the package managers fails the version check; it
+does not silently test a different version. This also works before the branch is merged, because
+`release.yml` already exists on the default branch.
+
 If the maintainer chooses a draft, the workflow stops after verified assets are attached. Later
 publishing that draft through GitHub triggers public-release verification, package-manager
 updates, installation smoke tests, and cleanup.
